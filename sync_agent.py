@@ -1,16 +1,19 @@
 import os
-import time
+import sys
+import shutil
+import subprocess
+import json  # Importação corrigida
+import logging
+from pathlib import Path
+import schedule
+import platform
 import requests
 import hashlib
 import sqlite3
 import threading
-import logging
-from pathlib import Path
+import time
 from datetime import datetime
-import schedule
-import sys
-import platform
-
+ 
 # Configurar logging
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +24,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
+ 
 class SyncAgent:
     def __init__(self, config_file='config.json'):
         self.config = self.load_config(config_file)
@@ -301,7 +304,7 @@ class SyncAgent:
             
         except Exception as e:
             logger.error(f"Erro ao criar atalho: {e}")
-
+ 
 def main():
     # Verificar se já está rodando
     if len(sys.argv) > 1 and sys.argv[1] == "--install":
@@ -318,6 +321,6 @@ def main():
         logger.info("Agente interrompido pelo usuário")
     except Exception as e:
         logger.error(f"Erro fatal: {e}")
-
+ 
 if __name__ == "__main__":
     main()

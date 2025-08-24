@@ -1,0 +1,14 @@
+streamlit
+pandas
+plotly
+fuzzywuzzy
+python-dateutil
+numpy
+openpyxl
+flask
+flask-cors
+sqlite3
+requests
+schedule
+pathlib
+uuid
