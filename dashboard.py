@@ -32,8 +32,19 @@ def resource_path(relative_path):
 estados_csv_path = resource_path("estados.csv")
 municipios_csv_path = resource_path("municipios.csv")
  
-# Configuração da API local
-API_URL = "http://localhost:8000"  # Padrão para desenvolvimento local
+# Função para obter a URL da API a partir de um arquivo ou configuração
+def obter_url_api():
+    """Obtém a URL da API a partir de um arquivo ou configuração"""
+    # Tentar obter a URL do arquivo ngrok_url.txt
+    if os.path.exists("ngrok_url.txt"):
+        with open("ngrok_url.txt", "r") as f:
+            return f.read().strip()
+    
+    # Se não existir, usar localhost
+    return "http://localhost:8000"
+ 
+# Configuração da API local - agora dinâmica
+API_URL = obter_url_api()
  
 # Funções de integração com API
 def verificar_api_local():
@@ -241,8 +252,13 @@ def carregar_dados_api():
            ```
            python iniciar_api.py
            ```
-        2. Verifique se a pasta 'pedidos' contém seus arquivos Excel
-        3. Aguarde alguns segundos e recarregue a página
+        2. Se estiver usando o Streamlit Cloud, configure o ngrok:
+           ```
+           python iniciar_api_com_ngrok.py
+           ```
+        3. Copie a URL pública do ngrok e cole no campo "URL da API Local"
+        4. Verifique se a pasta 'pedidos' contém seus arquivos Excel
+        5. Aguarde alguns segundos e recarregue a página
         """)
         
         # Retornar DataFrame vazio
@@ -406,17 +422,40 @@ st.markdown("""
 # Placeholder para atualizar o conteúdo
 placeholder = st.empty()
  
-# Adicionar painel de status da API
-st.sidebar.title("Status da API Local")
+# Adicionar painel de configuração da API no sidebar
+st.sidebar.title("Configuração da API")
+ 
+# Obter URL atual
+api_url_atual = obter_url_api()
+ 
+# Permitir que o usuário insira uma URL manualmente
+api_url_personalizada = st.sidebar.text_input(
+    "URL da API Local",
+    value=api_url_atual,
+    help="Insira a URL pública da sua API local (ex: https://abc123.ngrok.io)"
+)
+ 
+# Atualizar a URL da API
+API_URL = api_url_personalizada
+ 
+# Botão para testar a conexão
+if st.sidebar.button("Testar Conexão"):
+    try:
+        response = requests.get(f"{API_URL}/api/saude", timeout=5)
+        if response.status_code == 200:
+            st.sidebar.success("✅ Conexão bem-sucedida!")
+            dados = response.json()
+            st.sidebar.caption(f"Status: {dados.get('status', 'desconhecido')}")
+            st.sidebar.caption(f"Arquivos: {dados.get('total_arquivos', 0)}")
+        else:
+            st.sidebar.error(f"❌ Erro: Status {response.status_code}")
+    except Exception as e:
+        st.sidebar.error(f"❌ Erro de conexão: {str(e)}")
  
 # Verificar status da API
 api_ok, api_info = verificar_api_local()
  
 if api_ok:
-    st.sidebar.success("✅ API Conectada")
-    st.sidebar.caption(f"Arquivos: {api_info.get('total_arquivos', 0)}")
-    st.sidebar.caption(f"Pasta: {api_info.get('pasta_pedidos', 'N/A')}")
-    
     # Botão para recarregar dados
     if st.sidebar.button("🔄 Recarregar Dados"):
         # Limpar cache
@@ -441,19 +480,27 @@ if api_ok:
     else:
         st.sidebar.warning("Nenhum arquivo encontrado")
 else:
-    st.sidebar.error("❌ API Offline")
     st.sidebar.info("Execute a API local no seu computador")
     
     # Mostrar instruções
     with st.sidebar.expander("Como configurar"):
         st.markdown("""
-        ### Passos para configurar:
-        1. Execute o script de inicialização:
+        ### Usando Ngrok (Recomendado):
+        1. Execute o script com ngrok:
+           ```
+           python iniciar_api_com_ngrok.py
+           ```
+        2. Copie a URL pública exibida
+        3. Cole no campo "URL da API Local" acima
+        4. Clique em "Testar Conexão"
+        
+        ### Manualmente:
+        1. Execute o script normal:
            ```
            python iniciar_api.py
            ```
-        2. Coloque seus arquivos na pasta 'pedidos'
-        3. Recarregue esta página
+        2. Configure um serviço de túnel (ngrok, cloudflare tunnel, etc.)
+        3. Insira a URL pública no campo acima
         """)
  
 # Adicionar botão para verificar arquivos
