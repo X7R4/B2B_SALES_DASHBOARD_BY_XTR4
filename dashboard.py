@@ -256,13 +256,9 @@ def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
     percentual_kit_ar = 0.007  # 0.7%
     percentual_pecas_avulsas = 0.005  # 0.5%
     
-    # Calcular comissões
-    comissao_kit_ar = 0
-    comissao_pecas_avulsas = 0
-    
-    if valor_total_vendido > 150000:  # Maior que 150 mil
-        comissao_kit_ar = valor_kit_ar * percentual_kit_ar
-        comissao_pecas_avulsas = valor_pecas_avulsas * percentual_pecas_avulsas
+    # Calcular comissões (agora para qualquer valor, sem condição)
+    comissao_kit_ar = valor_kit_ar * percentual_kit_ar
+    comissao_pecas_avulsas = valor_pecas_avulsas * percentual_pecas_avulsas
     
     # Calcular bônus
     bonus = 0
@@ -1010,7 +1006,7 @@ if api_ok:
                                     '<b>Estado</b>: %{customdata[3]}<br>'+
                                     '<b>Última Compra</b>: %{customdata[4]}<br>'+
                                     '<b>Meses sem comprar</b>: %{customdata[5]}<br>'+
-                                    '<extra></extra>',  # Remove the trace name extra
+                                    '<extra></extra>',  # Remove o trace name extra
                                     customdata=df_recuperar_mapa[["Cliente", "Telefone", "Cidade", "Estado", "Ultima_Compra", "meses_sem_comprar"]],
                                     marker=dict(size=9, color="#FFA500", opacity=0.9,),  # Pontos laranjas
                                     
@@ -1181,8 +1177,8 @@ if api_ok:
                 with st.expander("Regras de Cálculo"):
                     st.markdown("""
                     ### Percentuais de Comissão:
-                    - **KIT AR**: 0.7% (aplicado se valor total vendido > R$ 150.000,00)
-                    - **Peças Avulsas e Kit Rosca**: 0.5% (aplicado se valor total vendido > R$ 150.000,00)
+                    - **KIT AR**: 0.7% (calculado para qualquer valor de vendas)
+                    - **Peças Avulsas e Kit Rosca**: 0.5% (calculado para qualquer valor de vendas)
                     
                     ### Bônus:
                     - **Bônus por Volume**: R$ 200,00 a cada R$ 50.000,00 vendido
