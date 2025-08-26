@@ -34,9 +34,56 @@ def iniciar_ngrok():
     print("Iniciando túnel ngrok...")
     
     try:
-        # Configurar token do ngrok (substitua pelo seu token)
-        # Você pode obter um token gratuito em https://ngrok.com/
-        ngrok.set_auth_token("SEU_TOKEN_NGROK")
+        # Tentar obter o token de várias fontes
+        token = None
+        
+        # 1. Verificar variável de ambiente
+        token = os.environ.get("NGROK_AUTH_TOKEN")
+        
+        # 2. Se não encontrar, verificar se há um arquivo de configuração
+        if not token and os.path.exists("ngrok_token.txt"):
+            try:
+                with open("ngrok_token.txt", "r") as f:
+                    token = f.read().strip()
+                print("✓ Token lido do arquivo ngrok_token.txt")
+            except:
+                pass
+        
+        # 3. Se ainda não encontrar, pedir para o usuário inserir
+        if not token:
+            print("❌ Token do ngrok não encontrado!")
+            print("\nPor favor, configure o token do ngrok:")
+            print("1. Crie uma conta em https://ngrok.com/")
+            print("2. Copie seu token authtoken")
+            print("3. Escolha uma das opções abaixo:")
+            
+            print("\nOpção A - Configurar como variável de ambiente:")
+            print("   - Windows: setx NGROK_AUTH_TOKEN \"seu_token_aqui\"")
+            print("   - Linux/Mac: export NGROK_AUTH_TOKEN=\"seu_token_aqui\"")
+            print("   - Depois, feche e abra um novo terminal")
+            
+            print("\nOpção B - Salvar em arquivo:")
+            print("   - Execute: python configurar_token_ngrok.py")
+            print("   - Siga as instruções para inserir seu token")
+            
+            print("\nOpção C - Inserir manualmente agora:")
+            token = input("   - Digite seu token do ngrok aqui: ").strip()
+            
+            if token:
+                # Salvar o token em um arquivo para uso futuro
+                try:
+                    with open("ngrok_token.txt", "w") as f:
+                        f.write(token)
+                    print("✓ Token salvo em ngrok_token.txt para uso futuro")
+                except:
+                    pass
+        
+        if not token:
+            print("❌ Não foi possível obter o token do ngrok")
+            return None
+        
+        # Configurar o token
+        ngrok.set_auth_token(token)
         
         # Iniciar túnel na porta 8000
         tunnel = ngrok.connect(8000, "http")
@@ -85,12 +132,19 @@ def main():
         print(f"   - Publicamente: {public_url}")
         print("Pressione Ctrl+C para encerrar a API\n")
         
+        # Verificar se o arquivo local_api.py existe
+        api_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local_api.py")
+        if not os.path.exists(api_path):
+            print(f"❌ Arquivo local_api.py não encontrado em: {api_path}")
+            print("Por favor, verifique se o arquivo está no mesmo diretório que este script.")
+            return
+        
         # Iniciar a API
         try:
             if platform.system() == "Windows":
-                subprocess.call([sys.executable, "local_api.py"])
+                subprocess.call([sys.executable, api_path])
             else:
-                subprocess.call([sys.executable, "local_api.py"])
+                subprocess.call([sys.executable, api_path])
         except KeyboardInterrupt:
             print("\n👋 API encerrada")
     else:
