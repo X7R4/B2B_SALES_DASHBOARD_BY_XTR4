@@ -344,14 +344,8 @@ def identificar_lojistas_recuperar(df):
     return pd.DataFrame()
  
 # Função para gerar tabela de pedidos da meta atual
-def gerar_tabela_pedidos_meta_atual(df):
-    # Filtrar para o período da meta atual (26/07 a 25/08)
-    hoje = dt.now()
-    mes_atual = hoje.month
-    ano_atual = hoje.year
-    inicio_meta = dt(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
-    fim_meta = (inicio_meta + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
-    
+def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
+    """Gera tabela de pedidos para o período da meta especificado"""
     df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
     
     if df_meta.empty:
@@ -523,14 +517,65 @@ if not df.empty:
     df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce")
     df["Período_Mês"] = df["Data"].dt.to_period("M")
     df = df.dropna(subset=["Data"])
- 
-    # Período de fechamento atual: 26/07/2025 a 25/08/2025
+    
+    # Obter anos disponíveis
+    anos_disponiveis = sorted(df["Data"].dt.year.unique())
+    
+    # Obter mês atual como padrão
     hoje = dt.now()
     mes_atual = hoje.month
     ano_atual = hoje.year
-    inicio_meta = dt(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
-    fim_meta = (inicio_meta + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
- 
+    
+    # Criar colunas para o sidebar
+    col_ano, col_mes = st.sidebar.columns(2)
+    
+    # Filtro de ano
+    with col_ano:
+        ano_selecionado = st.selectbox(
+            "Ano", 
+            anos_disponiveis, 
+            index=len(anos_disponiveis)-1,  # Selecionar o último ano por padrão
+            key="ano_selecionado"
+        )
+    
+    # Filtro de mês
+    with col_mes:
+        # Obter meses disponíveis para o ano selecionado
+        if ano_selecionado:
+            meses_disponiveis = sorted(df[df["Data"].dt.year == ano_selecionado]["Data"].dt.month.unique())
+        else:
+            meses_disponiveis = sorted(df["Data"].dt.month.unique())
+        
+        # Converter números de meses para nomes
+        nomes_meses = [calendar.month_name[mes] for mes in meses_disponiveis]
+        
+        # Encontrar o índice do mês atual
+        if mes_atual in meses_disponiveis and ano_selecionado == ano_atual:
+            indice_mes = meses_disponiveis.index(mes_atual)
+        else:
+            indice_mes = 0  # Primeiro mês disponível
+        
+        mes_selecionado = st.selectbox(
+            "Mês", 
+            nomes_meses, 
+            index=indice_mes,
+            key="mes_selecionado"
+        )
+        
+        # Converter nome do mês de volta para número
+        mes_selecionado_num = meses_disponiveis[nomes_meses.index(mes_selecionado)]
+    
+    # Calcular período da meta com base nos filtros
+    if mes_selecionado_num == 1:
+        # Janeiro: período de 26/12 do ano anterior a 25/01 do ano atual
+        inicio_meta = dt(ano_selecionado - 1, 12, 26).replace(hour=0, minute=0, second=0)
+        fim_meta = dt(ano_selecionado, 1, 25).replace(hour=23, minute=59, second=59)
+    else:
+        # Demais meses: período de 26/mês-1 a 25/mês do ano atual
+        inicio_meta = dt(ano_selecionado, mes_selecionado_num - 1, 26).replace(hour=0, minute=0, second=0)
+        fim_meta = dt(ano_selecionado, mes_selecionado_num, 25).replace(hour=23, minute=59, second=59)
+    
+    # Filtrar dados para o período da meta
     df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
     
     # Calcular valor total vendido sem duplicatas
@@ -545,43 +590,47 @@ if not df.empty:
     meta_total = 200_000
     percentual_meta = min(1.0, valor_total_vendido / meta_total)
     valor_restante = max(0, meta_total - valor_total_vendido)
- 
+    
     with placeholder.container():
         st.subheader(f"Meta Mensal Período: {inicio_meta.strftime('%d/%m/%Y')} a {fim_meta.strftime('%d/%m/%Y')}")
         st.markdown("<hr style='border: 1px solid #3A3A52;'>", unsafe_allow_html=True)
- 
+        
         st.progress(percentual_meta, text=f"Progresso da Meta: {percentual_meta*100:.1f}%")
         st.caption(f"Número de pedidos processados: {total_pedidos} | Pedidos únicos: {pedidos_unicos} | Duplicatas: {duplicatas}")
- 
+        
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Vendido (Z19-Z24)", f"R$ {valor_total_vendido:,.2f}")
         col2.metric("Meta", f"R$ {meta_total:,.2f}")
         col3.metric("Restante", f"R$ {valor_restante:,.2f}")
- 
+        
         tab1, tab2 = st.tabs(["Desempenho Individual", "Análise de Clientes"])
- 
+        
         with tab1:
-            anos_disponiveis_local = sorted(df["Data"].dt.year.unique())
-            ano_selecionado_local = st.selectbox("Selecione o ano", ["Todos"] + list(anos_disponiveis_local), key="local_ano")
+            # Obter períodos de fechamento para o ano selecionado
+            periodos_fechamento = sorted(df[df["Data"].dt.year == ano_selecionado]["Data"].dt.to_period("M").apply(lambda x: f"{calendar.month_abbr[x.month]} / {x.year}").unique())
             
-            if ano_selecionado_local != "Todos":
-                df_ano = df[df["Data"].dt.year == ano_selecionado_local]
-                periodos_fechamento_local = sorted(df_ano["Data"].dt.to_period("M").apply(lambda x: f"{calendar.month_abbr[x.month]} / {x.year}").unique())
+            # Encontrar o índice do período selecionado
+            periodo_selecionado = f"{calendar.month_abbr[mes_selecionado_num]} / {ano_selecionado}"
+            if periodo_selecionado in periodos_fechamento:
+                indice_periodo = periodos_fechamento.tolist().index(periodo_selecionado)
             else:
-                periodos_fechamento_local = sorted(df["Data"].dt.to_period("M").apply(lambda x: f"{calendar.month_abbr[x.month]} / {x.year}").unique())
-            periodo_selecionado_local = st.selectbox("Selecione o período", ["Todos"] + list(periodos_fechamento_local), key="local_periodo")
- 
-            df_desempenho_local = df.copy()
-            if ano_selecionado_local != "Todos" and periodo_selecionado_local != "Todos":
-                mes_ano = periodo_selecionado_local.split(" / ")
-                mes = list(calendar.month_abbr).index(mes_ano[0])
-                ano = int(mes_ano[1])
-                inicio_periodo_local = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
-                fim_periodo_local = (inicio_periodo_local + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
-                df_desempenho_local = df_desempenho_local[(df_desempenho_local["Data"] >= inicio_periodo_local) & (df_desempenho_local["Data"] <= fim_periodo_local)]
-            elif ano_selecionado_local != "Todos":
-                df_desempenho_local = df_desempenho_local[df_desempenho_local["Data"].dt.year == ano_selecionado_local]
- 
+                indice_periodo = 0
+            
+            periodo_selecionado_local = st.selectbox(
+                "Selecione o período", 
+                periodos_fechamento, 
+                index=indice_periodo,
+                key="local_periodo"
+            )
+            
+            # Filtrar dados para o período selecionado
+            mes_ano = periodo_selecionado_local.split(" / ")
+            mes = list(calendar.month_abbr).index(mes_ano[0])
+            ano = int(mes_ano[1])
+            inicio_periodo_local = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
+            fim_periodo_local = (inicio_periodo_local + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
+            df_desempenho_local = df[(df["Data"] >= inicio_periodo_local) & (df["Data"] <= fim_periodo_local)].copy()
+            
             # Primeiro bloco: Gráficos ocupando todo o espaço
             col_d1_full, = st.columns([4])
             with col_d1_full:
@@ -590,36 +639,27 @@ if not df.empty:
                 fig_dia = px.bar(vendas_dia, x="Data", y="Valor Total Z19-Z24", template="plotly_dark", color_discrete_sequence=["#4A90E2"])
                 fig_dia.update_layout(xaxis_title="Data", yaxis_title="Valor Total (R$)", font=dict(size=10), margin=dict(l=10, r=10, t=30, b=10))
                 st.plotly_chart(fig_dia, use_container_width=True)
- 
-                # Comparação de Vendas: 2025 vs 2024 (por Semana)
-                if periodo_selecionado_local != "Todos" and ano_selecionado_local != "Todos":
-                    mes_ano = periodo_selecionado_local.split(" / ")
-                    mes = list(calendar.month_abbr).index(mes_ano[0])
-                    ano = int(mes_ano[1])
-                    inicio_2025 = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
-                    fim_2025 = (inicio_2025 + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
-                    inicio_2024 = inicio_2025 - relativedelta(years=1)
-                    fim_2024 = fim_2025 - relativedelta(years=1)
-                else:
-                    inicio_2025 = dt(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
-                    fim_2025 = (inicio_2025 + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
-                    inicio_2024 = inicio_2025 - relativedelta(years=1)
-                    fim_2024 = fim_2025 - relativedelta(years=1)
- 
-                df_2025 = df[(df["Data"] >= inicio_2025) & (df["Data"] <= fim_2025)].copy()
-                df_2024 = df[(df["Data"] >= inicio_2024) & (df["Data"] <= fim_2024)].copy()
- 
-                df_2025["Semana"] = df_2025["Data"].apply(lambda x: get_week(x, start_date=inicio_2025, end_date=fim_2025))
-                df_2024["Semana"] = df_2024["Data"].apply(lambda x: get_week(x, start_date=inicio_2024, end_date=fim_2024))
- 
-                vendas_2025_week = df_2025.groupby("Semana")["Valor Total Z19-Z24"].sum().reindex(range(1, 5), fill_value=0).reset_index()
-                vendas_2025_week["Período"] = vendas_2025_week["Semana"].apply(lambda x: f"Semana {x}")
-                vendas_2024_week = df_2024.groupby("Semana")["Valor Total Z19-Z24"].sum().reindex(range(1, 5), fill_value=0).reset_index()
-                vendas_2024_week["Período"] = vendas_2024_week["Semana"].apply(lambda x: f"Semana {x}")
- 
+                
+                # Comparação de Vendas: Ano Atual vs Ano Anterior (por Semana)
+                inicio_atual = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
+                fim_atual = (inicio_atual + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
+                inicio_anterior = inicio_atual - relativedelta(years=1)
+                fim_anterior = fim_atual - relativedelta(years=1)
+                
+                df_atual = df[(df["Data"] >= inicio_atual) & (df["Data"] <= fim_atual)].copy()
+                df_anterior = df[(df["Data"] >= inicio_anterior) & (df["Data"] <= fim_anterior)].copy()
+                
+                df_atual["Semana"] = df_atual["Data"].apply(lambda x: get_week(x, start_date=inicio_atual, end_date=fim_atual))
+                df_anterior["Semana"] = df_anterior["Data"].apply(lambda x: get_week(x, start_date=inicio_anterior, end_date=fim_anterior))
+                
+                vendas_atual_week = df_atual.groupby("Semana")["Valor Total Z19-Z24"].sum().reindex(range(1, 5), fill_value=0).reset_index()
+                vendas_atual_week["Período"] = vendas_atual_week["Semana"].apply(lambda x: f"Semana {x}")
+                vendas_anterior_week = df_anterior.groupby("Semana")["Valor Total Z19-Z24"].sum().reindex(range(1, 5), fill_value=0).reset_index()
+                vendas_anterior_week["Período"] = vendas_anterior_week["Semana"].apply(lambda x: f"Semana {x}")
+                
                 fig_comparacao_ano = go.Figure()
-                fig_comparacao_ano.add_trace(go.Scatter(x=vendas_2025_week["Período"], y=vendas_2025_week["Valor Total Z19-Z24"], mode='lines+markers', name='2025', line=dict(color='#4A90E2')))
-                fig_comparacao_ano.add_trace(go.Scatter(x=vendas_2024_week["Período"], y=vendas_2024_week["Valor Total Z19-Z24"], mode='lines+markers', name='2024', line=dict(color='#50E3C2')))
+                fig_comparacao_ano.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano}', line=dict(color='#4A90E2')))
+                fig_comparacao_ano.add_trace(go.Scatter(x=vendas_anterior_week["Período"], y=vendas_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano-1}', line=dict(color='#50E3C2')))
                 fig_comparacao_ano.update_layout(
                     template="plotly_dark",
                     xaxis_title="Semanas",
@@ -629,68 +669,45 @@ if not df.empty:
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 st.plotly_chart(fig_comparacao_ano, use_container_width=True)
- 
+                
                 # Comparação de Vendas: Mês Atual vs Mês Anterior (por Semana)
-                if periodo_selecionado_local != "Todos" and ano_selecionado_local != "Todos":
-                    mes_ano = periodo_selecionado_local.split(" / ")
-                    mes = list(calendar.month_abbr).index(mes_ano[0])
-                    ano = int(mes_ano[1])
-                    inicio_atual = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
-                    fim_atual = (inicio_atual + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
-                    inicio_anterior = inicio_atual - relativedelta(months=1)
-                    fim_anterior = fim_atual - relativedelta(months=1)
-                else:
-                    inicio_atual = dt(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
-                    fim_atual = (inicio_atual + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
-                    inicio_anterior = inicio_atual - relativedelta(months=1)
-                    fim_anterior = fim_atual - relativedelta(months=1)
- 
-                df_atual = df[(df["Data"] >= inicio_atual) & (df["Data"] <= fim_atual)].copy()
-                df_anterior = df[(df["Data"] >= inicio_anterior) & (df["Data"] <= fim_anterior)].copy()
- 
-                df_atual["Semana"] = df_atual["Data"].apply(lambda x: get_week(x, start_date=inicio_atual, end_date=fim_atual))
-                df_anterior["Semana"] = df_anterior["Data"].apply(lambda x: get_week(x, start_date=inicio_anterior, end_date=fim_anterior))
- 
-                vendas_atual_week = df_atual.groupby("Semana")["Valor Total Z19-Z24"].sum().reindex(range(1, 5), fill_value=0).reset_index()
-                vendas_atual_week["Período"] = vendas_atual_week["Semana"].apply(lambda x: f"Semana {x}")
-                vendas_anterior_week = df_anterior.groupby("Semana")["Valor Total Z19-Z24"].sum().reindex(range(1, 5), fill_value=0).reset_index()
-                vendas_anterior_week["Período"] = vendas_anterior_week["Semana"].apply(lambda x: f"Semana {x}")
- 
-                fig_comparacao_mes = go.Figure()
-                fig_comparacao_mes.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[inicio_atual.month]} {inicio_atual.year}', line=dict(color='#4A90E2')))
-                fig_comparacao_mes.add_trace(go.Scatter(x=vendas_anterior_week["Período"], y=vendas_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[inicio_anterior.month]} {inicio_anterior.year}', line=dict(color='#E94F37')))
-                fig_comparacao_mes.update_layout(
-                    template="plotly_dark",
-                    xaxis_title="Semanas",
-                    yaxis_title="Valor Total (R$)",
-                    font=dict(size=10),
-                    margin=dict(l=10, r=10, t=30, b=10),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                st.plotly_chart(fig_comparacao_mes, use_container_width=True)
- 
+                if mes > 1:
+                    # Comparar com o mês anterior do mesmo ano
+                    inicio_mes_anterior = dt(ano, mes - 1, 26).replace(hour=0, minute=0, second=0)
+                    fim_mes_anterior = (inicio_mes_anterior + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
+                    
+                    df_mes_anterior = df[(df["Data"] >= inicio_mes_anterior) & (df["Data"] <= fim_mes_anterior)].copy()
+                    df_mes_anterior["Semana"] = df_mes_anterior["Data"].apply(lambda x: get_week(x, start_date=inicio_mes_anterior, end_date=fim_mes_anterior))
+                    vendas_mes_anterior_week = df_mes_anterior.groupby("Semana")["Valor Total Z19-Z24"].sum().reindex(range(1, 5), fill_value=0).reset_index()
+                    vendas_mes_anterior_week["Período"] = vendas_mes_anterior_week["Semana"].apply(lambda x: f"Semana {x}")
+                    
+                    fig_comparacao_mes = go.Figure()
+                    fig_comparacao_mes.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[mes]} {ano}', line=dict(color='#4A90E2')))
+                    fig_comparacao_mes.add_trace(go.Scatter(x=vendas_mes_anterior_week["Período"], y=vendas_mes_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[mes-1]} {ano}', line=dict(color='#E94F37')))
+                    fig_comparacao_mes.update_layout(
+                        template="plotly_dark",
+                        xaxis_title="Semanas",
+                        yaxis_title="Valor Total (R$)",
+                        font=dict(size=10),
+                        margin=dict(l=10, r=10, t=30, b=10),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    )
+                    st.plotly_chart(fig_comparacao_mes, use_container_width=True)
+            
             # Segundo bloco: Gráficos ocupando todo o espaço
             col_d2_full, = st.columns([4])
             with col_d2_full:
                 # Top 10 Produtos Mais Vendidos com Quantidade
-                if periodo_selecionado_local != "Todos" and ano_selecionado_local != "Todos":
-                    mes_ano = periodo_selecionado_local.split(" / ")
-                    mes = list(calendar.month_abbr).index(mes_ano[0])
-                    ano = int(mes_ano[1])
-                    inicio_periodo = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
-                    fim_periodo = (inicio_periodo + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
-                    df_periodo = df_desempenho_local[(df_desempenho_local["Data"] >= inicio_periodo) & (df_desempenho_local["Data"] <= fim_periodo)].copy()
-                else:
-                    df_periodo = df_desempenho_local[(df_desempenho_local["Data"] >= inicio_meta) & (df_desempenho_local["Data"] <= fim_meta)].copy()
- 
+                df_periodo = df_desempenho_local.copy()
+                
                 # Filtrar apenas produtos com Quantidade > 0 e agrupar corretamente
                 df_periodo = df_periodo[df_periodo["Quantidade"] > 0].copy()
                 df_periodo["Produto"] = df_periodo["Produto"].str.strip().str.upper()
                 top_produtos = df_periodo.groupby("Produto")["Quantidade"].sum().reset_index()
                 top_produtos = top_produtos.sort_values(by="Quantidade", ascending=False).head(10)
- 
+                
                 fig_top_produtos = px.bar(top_produtos, x="Produto", y="Quantidade", 
-                                        title=f"Top 10 Produtos Mais Vendidos - {inicio_periodo.strftime('%d/%m/%Y')} a {fim_periodo.strftime('%d/%m/%Y')}",
+                                        title=f"Top 10 Produtos Mais Vendidos - {inicio_periodo_local.strftime('%d/%m/%Y')} a {fim_periodo_local.strftime('%d/%m/%Y')}",
                                         template="plotly_dark", color_discrete_sequence=["#4A90E2"])
                 fig_top_produtos.update_layout(
                     xaxis_title="Produtos",
@@ -700,13 +717,13 @@ if not df.empty:
                     xaxis_tickangle=-45  # Rotacionar rótulos para melhor legibilidade
                 )
                 st.plotly_chart(fig_top_produtos, use_container_width=True)
- 
+                
                 # Vendas por Categoria de Produto (Pie Chart)
                 df_desempenho_local["Categoria"] = df_desempenho_local["Produto"].apply(classificar_produto)
                 vendas_categoria = df_desempenho_local.groupby("Categoria")["Valor Total Z19-Z24"].sum().reset_index()
                 categorias_completas = pd.DataFrame({"Categoria": ["KITS AR", "KITS ROSCA", "PEÇAS AVULSAS"]})
                 vendas_categoria = pd.merge(categorias_completas, vendas_categoria, on="Categoria", how="left").fillna(0)
- 
+                
                 fig_categoria = px.pie(vendas_categoria, names="Categoria", values="Valor Total Z19-Z24",
                                      title=f"Vendas por Categoria - {inicio_periodo_local.strftime('%d/%m/%Y')} a {fim_periodo_local.strftime('%d/%m/%Y')}",
                                      template="plotly_dark",
@@ -721,9 +738,9 @@ if not df.empty:
                 
                 # Botão para mostrar tabela de pedidos da meta atual
                 if st.button("Mostrar Tabela de Pedidos da Meta Atual"):
-                    tabela_pedidos = gerar_tabela_pedidos_meta_atual(df)
+                    tabela_pedidos = gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta)
                     if not tabela_pedidos.empty:
-                        st.subheader("Tabela de Pedidos da Meta Atual (26/07 a 25/08)")
+                        st.subheader(f"Tabela de Pedidos da Meta Atual ({inicio_meta.strftime('%d/%m/%Y')} a {fim_meta.strftime('%d/%m/%Y')})")
                         
                         # Verificar duplicatas
                         verificar_duplicatas(tabela_pedidos)
@@ -736,7 +753,7 @@ if not df.empty:
                         st.caption(f"Valor total de pedidos únicos: R$ {total_unico:,.2f}")
                     else:
                         st.warning("Não há pedidos no período da meta atual.")
- 
+        
         with tab2:
             # Identificar lojistas a recuperar
             df_lojistas_recuperar = identificar_lojistas_recuperar(df)
@@ -753,7 +770,7 @@ if not df.empty:
                 df_mapa = df.copy()
                 df_mapa["Cidade"] = df_mapa["Cidade"].str.strip()
                 df_mapa["Estado"] = df_mapa["Estado"].str.strip().str.upper()
- 
+                
                 # Aplicar fuzzy matching para corrigir erros de ortografia nas cidades considerando o estado
                 df_mapa["Cidade_Corrigida"] = None
                 df_mapa["latitude"] = None
@@ -782,14 +799,14 @@ if not df.empty:
                 
                 # Adicionar Estado_Corrigido diretamente do estado original
                 df_mapa["Estado_Corrigido"] = df_mapa["Estado"]
- 
+                
                 # Garantir que todos os clientes apareçam, sem agrupamento que possa remover duplicatas
                 # Manter apenas a última ocorrência de cada cliente
                 df_mapa = df_mapa.sort_values('Data').drop_duplicates(subset=['Cliente'], keep='last')
                 
                 # Adicionar coluna de Coordenadas Atuais como uma string combinada
                 df_mapa["Coordenadas Atuais"] = df_mapa.apply(lambda row: f"({row['latitude']}, {row['longitude']})", axis=1)
- 
+                
                 # Aplicar deslocamento mínimo para evitar sobreposição, mas garantindo que todos apareçam
                 # Agrupar por cidade corrigida
                 cidades_grupo = df_mapa.groupby("Cidade_Corrigida")
@@ -809,10 +826,10 @@ if not df.empty:
                         # Aplicar deslocamento
                         df_mapa.at[idx, "latitude"] += deslocamento_lat
                         df_mapa.at[idx, "longitude"] += deslocamento_lon
- 
+                
                 # Formatar a última compra para o hover
                 df_mapa["Ultima_Compra"] = df_mapa["Data"].dt.strftime("%d/%m/%Y")
- 
+                
                 # Remover linhas sem coordenadas (agora todas têm coordenadas)
                 df_mapa = df_mapa.dropna(subset=["latitude", "longitude"])
                 
@@ -847,7 +864,7 @@ if not df.empty:
                             height=600
                         )
                         st.plotly_chart(fig_mapa, use_container_width=True, config={'scrollZoom': True})
- 
+                        
                         # Editor de dados abaixo do mapa
                         df_tabela = df_mapa[["Cliente", "Telefone", "Cidade", "Estado", "Cidade_Corrigida", "Estado_Corrigido", "Coordenadas Atuais"]].copy()
                         st.data_editor(df_tabela, use_container_width=True)
@@ -872,7 +889,7 @@ if not df.empty:
                     df_recuperar_mapa = df_lojistas_recuperar.copy()
                     df_recuperar_mapa["Cidade"] = df_recuperar_mapa["Cidade"].str.strip()
                     df_recuperar_mapa["Estado"] = df_recuperar_mapa["Estado"].str.strip().str.upper()
- 
+                    
                     # Aplicar fuzzy matching para corrigir erros de ortografia nas cidades considerando o estado
                     df_recuperar_mapa["Cidade_Corrigida"] = None
                     df_recuperar_mapa["latitude"] = None
@@ -901,10 +918,10 @@ if not df.empty:
                     
                     # Adicionar Estado_Corrigido diretamente do estado original
                     df_recuperar_mapa["Estado_Corrigido"] = df_recuperar_mapa["Estado"]
- 
+                    
                     # Formatar a última compra para o hover
                     df_recuperar_mapa["Ultima_Compra"] = df_recuperar_mapa["Data"].dt.strftime("%d/%m/%Y")
- 
+                    
                     # Remover linhas sem coordenadas (agora todas têm coordenadas)
                     df_recuperar_mapa = df_recuperar_mapa.dropna(subset=["latitude", "longitude"])
                     
@@ -940,7 +957,7 @@ if not df.empty:
                                 height=600
                             )
                             st.plotly_chart(fig_recuperar, use_container_width=True, config={'scrollZoom': True})
- 
+                            
                             # Editor de dados abaixo do mapa
                             df_recuperar_tabela = df_recuperar_mapa[["Cliente", "Telefone", "Cidade", "Estado", "Ultima_Compra", "meses_sem_comprar"]].copy()
                             df_recuperar_tabela.columns = ["Cliente", "Telefone", "Cidade", "Estado", "Última Compra", "Meses sem Comprar"]
@@ -1064,7 +1081,7 @@ if not df.empty:
             # Seção 4: Tabela (ocupando todo o espaço)
             st.subheader("Dados Detalhados dos Lojistas")
             st.dataframe(top_lojistas.style.format({'Valor Total Z19-Z24': 'R$ {:,.2f}'}), use_container_width=True)
- 
+        
         if st.button("Verificar Arquivos na Pasta 'pedidos'"):
             arquivos = [f for f in os.listdir(diretorio_arquivos) if f.endswith(".xlsx")]
             st.write("Arquivos detectados:", arquivos if arquivos else "Nenhum arquivo .xlsx encontrado.")
