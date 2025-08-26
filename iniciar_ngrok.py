@@ -14,7 +14,7 @@ def main():
         print("Por favor, configure o token do ngrok:")
         print("1. Crie uma conta em https://ngrok.com/")
         print("2. Copie seu token authtoken")
-        print("3. Execute: set NGROK_AUTH_TOKEN=2vKfvdjYf6riQCdJQIgfqwAQwc7_6fzuXLjohFrK156SkQMhv")
+        print("3. Execute: set NGROK_AUTH_TOKEN=seu_token_aqui ")
         print("   (Linux/Mac) ou setx NGROK_AUTH_TOKEN=seu_token_aqui (Windows)")
         return
     

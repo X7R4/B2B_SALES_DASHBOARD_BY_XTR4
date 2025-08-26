@@ -36,7 +36,7 @@ def iniciar_ngrok():
     try:
         # Configurar token do ngrok (substitua pelo seu token)
         # Você pode obter um token gratuito em https://ngrok.com/
-        ngrok.set_auth_token("SEU_TOKEN_NGROK")
+        ngrok.set_auth_token("2vKfvdjYf6riQCdJQIgfqwAQwc7_6fzuXLjohFrK156SkQMhv")
         
         # Iniciar túnel na porta 8000
         tunnel = ngrok.connect(8000, "http")
