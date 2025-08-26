@@ -12,47 +12,10 @@ import unicodedata
 import numpy as np
 import math
 import sys
-import sqlite3
+import requests
 import json
-import threading
-import hashlib
-from flask import Flask, request, jsonify
-from werkzeug.exceptions import BadRequest
-import tempfile
-from io import BytesIO
-import base64
- 
-# Configuração da página
-st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
- 
-# Estilo elegante e profissional
-st.markdown("""
-    <style>
-        body { background: linear-gradient(135deg, #1A1A2E, #16213E); color: #E0E0E0; font-family: 'Helvetica Neue', Arial, sans-serif; margin: 0; padding: 0; height: 100vh; width: 100vw; overflow-x: hidden; }
-        .stProgress > div > div > div > div { background: linear-gradient(90deg, #4A90E2, #50E3C2); }
-        .stSelectbox, .stMultiselect { background-color: #2A2A3D; border: 1px solid #3A3A52; border-radius: 8px; color: #E0E0E0; box-shadow: 0 2px 4px rgba(0,0,0,0.2); width: 100%; padding: 8px; }
-        .stMetric { background: linear-gradient(135deg, #2A2A3D, #1E1E2E); border: 1px solid #3A3A52; border-radius: 8px; padding: 15px; color: #E0E0E0; box-shadow: 0 2px 6px rgba(0,0,0,0.3); text-align: center; width: 100%; }
-        .section { padding: 25px; margin-bottom: 25px; border-radius: 10px; background: linear-gradient(135deg, #2A2A3D, #1E1E2E); border: 1px solid #3A3A52; box-shadow: 0 4px 12px rgba(0,0,0,0.3); width: 100%; }
-        h1, h2, h3 { color: #4A90E2; font-weight: 500; text-transform: uppercase; letter-spacing: 1px; }
-        .stApp { padding: 30px; height: 100%; width: 100%; box-sizing: border-box; }
-        .stCaption { color: #B0B0B0; font-size: 0.9em; }
-        .css-1aumxhk { width: 100% !important; min-width: 0 !important; }
-        .css-1d391kg { width: 100% !important; min-width: 0 !important; }
-        .stPlotlyChart { width: 100% !important; height: auto !important; }
-        .stSpinner { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; z-index: 1000; width: auto; height: auto; }
-        .stTabs [data-baseweb="tab-list"] { background: linear-gradient(135deg, #2A2A3D, #1E1E2E); border-bottom: 1px solid #3A3A52; padding: 0 10px; display: flex; justify-content: center; }
-        .stTabs [data-baseweb="tab"] { background-color: #2A2A3D; color: #E0E0E0; padding: 10px 20px; margin: 0 5px; border: 1px solid #3A3A52; border-bottom: none; border-radius: 5px 5px 0 0; cursor: pointer; transition: background-color 0.3s; }
-        .stTabs [data-baseweb="tab"]:hover { background-color: #3A3A52; }
-        .stTabs [data-baseweb="tab"][aria-selected="true"] { background-color: #1E1E2E; color: #4A90E2; font-weight: bold; }
-        .filter-container { display: flex; gap: 15px; align-items: center; }
-        .filter-label { font-weight: 500; color: #4A90E2; margin-right: 10px; }
-        /* Centralizar gráficos */
-        div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stPlotlyChart"]) {
-            display: flex;
-            justify-content: center;
-        }
-    </style>
-""", unsafe_allow_html=True)
+from datetime import datetime as dt
+import time
  
 # Função para obter caminho de recursos (essencial para PyInstaller)
 def resource_path(relative_path):
@@ -69,48 +32,114 @@ def resource_path(relative_path):
 estados_csv_path = resource_path("estados.csv")
 municipios_csv_path = resource_path("municipios.csv")
  
-# Inicializar o banco de dados SQLite
-def init_db():
-    conn = sqlite3.connect('dashboard.db', check_same_thread=False)
-    cursor = conn.cursor()
-    
-    # Criar tabela de pedidos
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS pedidos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        data TEXT,
-        valor_total REAL,
-        produto TEXT,
-        quantidade REAL,
-        cidade TEXT,
-        estado TEXT,
-        cliente TEXT,
-        telefone TEXT,
-        arquivo_origem TEXT,
-        data_upload TEXT
-    )
-    ''')
-    
-    # Criar tabela de log de sincronização
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS sync_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cliente_id TEXT,
-        arquivo TEXT,
-        data_sync TEXT,
-        status TEXT,
-        registros INTEGER
-    )
-    ''')
-    
-    conn.commit()
-    return conn
+# Configuração da API local
+API_URL = "http://localhost:8000"  # Padrão para desenvolvimento local
  
-# Inicializar banco de dados
-db_conn = init_db()
+# Funções de integração com API
+def verificar_api_local():
+    """Verifica se a API local está acessível"""
+    try:
+        response = requests.get(f"{API_URL}/api/saude", timeout=5)
+        if response.status_code == 200:
+            return True, response.json()
+        else:
+            return False, {"erro": f"Status code: {response.status_code}"}
+    except Exception as e:
+        return False, {"erro": str(e)}
  
-# Criar aplicação Flask para API
-app = Flask(__name__)
+def obter_arquivos_api():
+    """Obtém a lista de arquivos da API local"""
+    try:
+        response = requests.get(f"{API_URL}/api/arquivos", timeout=10)
+        if response.status_code == 200:
+            return response.json().get("arquivos", [])
+        else:
+            return []
+    except Exception as e:
+        return []
+ 
+def obter_dados_arquivo_api(nome_arquivo):
+    """Obtém os dados de um arquivo específico da API local"""
+    try:
+        response = requests.get(f"{API_URL}/api/arquivo/{nome_arquivo}", timeout=30)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return None
+    except Exception as e:
+        return None
+ 
+def obter_todos_os_pedidos_api():
+    """Obtém todos os pedidos de todos os arquivos da API local"""
+    try:
+        response = requests.get(f"{API_URL}/api/todos-pedidos", timeout=60)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"pedidos": [], "total": 0}
+    except Exception as e:
+        return {"pedidos": [], "total": 0}
+ 
+def converter_dados_api_para_dataframe(dados_api):
+    """Converte os dados da API para o formato DataFrame esperado pelo dashboard"""
+    if not dados_api or "pedidos" not in dados_api:
+        return pd.DataFrame()
+    
+    pedidos = dados_api["pedidos"]
+    
+    # Converter para DataFrame
+    dados_convertidos = []
+    for pedido in pedidos:
+        dados_convertidos.append({
+            "Número do Pedido": pedido.get("numero_pedido", "Desconhecido"),
+            "Data": pd.to_datetime(pedido.get("data")) if pedido.get("data") else pd.NaT,
+            "Valor Total Z19-Z24": float(pedido.get("valor_total", 0)),
+            "Produto": pedido.get("produto", "Desconhecido"),
+            "Quantidade": float(pedido.get("quantidade", 0)),
+            "Cidade": pedido.get("cidade", "Desconhecido"),
+            "Estado": pedido.get("estado", "Desconhecido"),
+            "Cliente": pedido.get("cliente", "Desconhecido"),
+            "Telefone": pedido.get("telefone", "Desconhecido")
+        })
+    
+    # Criar DataFrame
+    df = pd.DataFrame(dados_convertidos)
+    
+    # Remover duplicatas baseado no número do pedido e data
+    # Isso garante que cada pedido seja contabilizado apenas uma vez
+    df = df.drop_duplicates(subset=['Número do Pedido', 'Data'])
+    
+    return df
+ 
+def verificar_duplicatas(df):
+    """Verifica e relata duplicatas no DataFrame"""
+    # Verificar duplicatas baseado no número do pedido
+    duplicatas = df[df.duplicated(subset=['Número do Pedido'], keep=False)]
+    
+    if not duplicatas.empty:
+        st.warning(f"Foram encontradas {len(duplicatas)} duplicatas!")
+        
+        # Mostrar as duplicatas
+        with st.expander("Ver Duplicatas"):
+            st.dataframe(duplicatas[["Número do Pedido", "Data", "Cliente", "Valor Total Z19-Z24"]])
+        
+        # Estatísticas de duplicatas
+        st.caption(f"Total de pedidos: {len(df)} | Pedidos únicos: {len(df.drop_duplicates(subset=['Número do Pedido']))} | Duplicatas: {len(duplicatas)}")
+        
+        return True
+    else:
+        st.success("✅ Nenhuma duplicata encontrada!")
+        st.caption(f"Total de pedidos: {len(df)} | Todos são únicos")
+        return False
+ 
+def limpar_duplicatas(df):
+    """Remove duplicatas do DataFrame"""
+    df_limpo = df.drop_duplicates(subset=['Número do Pedido', 'Data'])
+    
+    st.success(f"Removidas {len(df) - len(df_limpo)} duplicatas!")
+    st.caption(f"Registros antes: {len(df)} | Registros depois: {len(df_limpo)}")
+    
+    return df_limpo
  
 # Função para normalizar texto (remover acentos e converter para maiúsculas)
 def normalize_text(text):
@@ -118,17 +147,6 @@ def normalize_text(text):
         return ""
     text = ''.join(c for c in unicodedata.normalize('NFD', str(text)) if unicodedata.category(c) != 'Mn')
     return text.strip().upper()
- 
-# Carregar arquivos de estados e municípios
-estados_df = pd.read_csv(estados_csv_path)
-municipios_df = pd.read_csv(municipios_csv_path)
- 
-# Preparar dados de municípios para busca eficiente
-municipios_df["nome_normalizado"] = municipios_df["nome"].apply(normalize_text)
-city_list = municipios_df["nome_normalizado"].tolist()
- 
-# Normalizar estados para matching
-estados_df["uf_normalizado"] = estados_df["uf"].apply(normalize_text)
  
 # Função para encontrar a cidade mais próxima com fuzzy matching considerando o estado
 def find_closest_city_with_state(city, state, city_list, municipios_df, estados_df, threshold=70):
@@ -204,244 +222,76 @@ def classificar_produto(descricao):
     else:
         return "PEÇAS AVULSAS"
  
-# Função para extrair dados de um arquivo Excel
-def extrair_dados_arquivo(file_content, filename):
-    try:
-        # Salvar conteúdo em arquivo temporário
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
-            tmp_file.write(file_content)
-            tmp_file_path = tmp_file.name
-        
-        # Ler arquivo Excel
-        xl = pd.ExcelFile(tmp_file_path)
-        df = xl.parse(xl.sheet_names[0], header=None)
- 
-        data_pedido_raw = df.iloc[1, 15]
-        data_pedido = pd.to_datetime(data_pedido_raw, errors="coerce", dayfirst=True)
- 
-        if pd.isna(data_pedido) or data_pedido.dayofweek >= 5:
-            # Remover arquivo temporário
-            os.unlink(tmp_file_path)
-            return None
- 
-        valores_z19_z24 = [df.iloc[i, 25] for i in range(18, 24) if pd.notna(df.iloc[i, 25])]
-        valor_total_z = sum(pd.to_numeric(valores_z19_z24, errors="coerce"))
- 
-        # Extrair quantidades da coluna A19:A24 (índice 0) e descrições da coluna C18:C24 (índice 2)
-        quantidades = [df.iloc[i, 0] for i in range(18, 24) if pd.notna(df.iloc[i, 0]) and pd.notna(df.iloc[i, 2]) and df.iloc[i, 0] > 0]
-        descricoes = [df.iloc[i, 2] for i in range(18, 24) if pd.notna(df.iloc[i, 0]) and pd.notna(df.iloc[i, 2]) and df.iloc[i, 0] > 0]
- 
-        # Extrair cidade e estado (E12 e R12)
-        cidade = df.iloc[11, 4] if pd.notna(df.iloc[11, 4]) else "Desconhecido"
-        estado = df.iloc[11, 17] if pd.notna(df.iloc[11, 17]) else "Desconhecido"
-        cliente = df.iloc[9, 4] if pd.notna(df.iloc[9, 4]) else "Desconhecido"
-        telefone = df.iloc[12, 4] if pd.notna(df.iloc[12, 4]) else "Desconhecido"
- 
-        # Alinhar quantidades e descrições, usando o menor comprimento para evitar erro de arrays
-        min_length = min(len(quantidades), len(descricoes))
-        if min_length == 0:
-            # Remover arquivo temporário
-            os.unlink(tmp_file_path)
-            return [{
-                "Data": data_pedido,
-                "Valor Total Z19-Z24": valor_total_z,
-                "Produto": "Produto Desconhecido",
-                "Quantidade": 0,
-                "Cidade": cidade,
-                "Estado": estado,
-                "Cliente": cliente,
-                "Telefone": telefone
-            }]
- 
-        quantidades = [float(q) for q in quantidades[:min_length]]
-        descricoes = descricoes[:min_length]
-        
-        # Retornar uma lista de dicionários, um por cada produto/quantidade
-        dados_extraidos = []
-        for produto, quantidade in zip(descricoes, quantidades):
-            dados_extraidos.append({
-                "Data": data_pedido,
-                "Valor Total Z19-Z24": valor_total_z / min_length if min_length > 0 else valor_total_z,
-                "Produto": produto,
-                "Quantidade": quantidade,
-                "Cidade": cidade,
-                "Estado": estado,
-                "Cliente": cliente,
-                "Telefone": telefone
-            })
-        
-        # Remover arquivo temporário
-        os.unlink(tmp_file_path)
-        return dados_extraidos
- 
-    except Exception as e:
-        st.error(f"Erro ao processar arquivo {filename}: {str(e)}")
-        return None
- 
-# Endpoint para upload de arquivos
-@app.route('/api/upload', methods=['POST'])
-def upload_file():
-    try:
-        # Verificar autenticação
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            return jsonify({"error": "Token de autenticação inválido"}), 401
-        
-        token = auth_header.split(' ')[1]
-        api_token = st.secrets.get("API_TOKEN", "seu_token_secreto")
-        if token != api_token:
-            return jsonify({"error": "Token de autenticação inválido"}), 401
-        
-        # Verificar se tem arquivo
-        if 'file' not in request.files:
-            return jsonify({"error": "Nenhum arquivo enviado"}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({"error": "Nenhum arquivo selecionado"}), 400
-        
-        # Obter ID do cliente
-        client_id = request.form.get('client_id', 'unknown')
-        
-        # Processar arquivo
-        dados = extrair_dados_arquivo(file.read(), file.filename)
-        
-        if not dados:
-            return jsonify({"error": "Nenhum dado válido encontrado no arquivo"}), 400
-        
-        # Salvar no banco de dados
-        cursor = db_conn.cursor()
-        registros_inseridos = 0
-        
-        for dado in dados:
-            cursor.execute('''
-            INSERT INTO pedidos (data, valor_total, produto, quantidade, cidade, estado, cliente, telefone, arquivo_origem, data_upload)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                dado["Data"].strftime('%Y-%m-%d'),
-                dado["Valor Total Z19-Z24"],
-                dado["Produto"],
-                dado["Quantidade"],
-                dado["Cidade"],
-                dado["Estado"],
-                dado["Cliente"],
-                dado["Telefone"],
-                file.filename,
-                datetime.now().isoformat()
-            ))
-            registros_inseridos += 1
-        
-        # Registrar sincronização
-        cursor.execute('''
-        INSERT INTO sync_log (cliente_id, arquivo, data_sync, status, registros)
-        VALUES (?, ?, ?, ?, ?)
-        ''', (client_id, file.filename, datetime.now().isoformat(), 'success', registros_inseridos))
-        
-        db_conn.commit()
-        
-        return jsonify({
-            "success": True,
-            "message": f"Arquivo {file.filename} processado com sucesso",
-            "registros": registros_inseridos
-        })
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
- 
-# Endpoint para verificar status
-@app.route('/api/status', methods=['GET'])
-def check_status():
-    try:
-        cursor = db_conn.cursor()
-        
-        # Contar registros
-        cursor.execute("SELECT COUNT(*) FROM pedidos")
-        total_registros = cursor.fetchone()[0]
-        
-        # Obter última sincronização
-        cursor.execute("SELECT MAX(data_sync) FROM sync_log")
-        ultima_sync = cursor.fetchone()[0]
-        
-        return jsonify({
-            "status": "online",
-            "total_registros": total_registros,
-            "ultima_sincronizacao": ultima_sync
-        })
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
- 
-# Endpoint para listar arquivos já sincronizados
-@app.route('/api/synced_files', methods=['GET'])
-def list_synced_files():
-    try:
-        # Verificar autenticação
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            return jsonify({"error": "Token de autenticação inválido"}), 401
-        
-        token = auth_header.split(' ')[1]
-        api_token = st.secrets.get("API_TOKEN", "seu_token_secreto")
-        if token != api_token:
-            return jsonify({"error": "Token de autenticação inválido"}), 401
-        
-        client_id = request.args.get('client_id', 'unknown')
-        
-        # Obter arquivos já sincronizados
-        cursor = db_conn.cursor()
-        cursor.execute('''
-        SELECT DISTINCT arquivo_origem, MAX(data_sync) as ultima_sync, COUNT(*) as sincronizacoes
-        FROM sync_log 
-        WHERE cliente_id = ? 
-        GROUP BY arquivo_origem
-        ''', (client_id,))
-        
-        arquivos = [{"nome": row[0], "ultima_sync": row[1], "sincronizacoes": row[2]} for row in cursor.fetchall()]
-        
-        return jsonify({
-            "arquivos": arquivos
-        })
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
- 
-# Função para carregar dados do banco de dados
-def carregar_dados_do_banco():
-    cursor = db_conn.cursor()
+# Função para carregar dados usando a API local
+def carregar_dados_api():
+    """Carrega dados usando a API local"""
+    # Verificar se a API está acessível
+    api_ok, api_info = verificar_api_local()
     
-    # Verificar se há dados no banco
-    cursor.execute("SELECT COUNT(*) FROM pedidos")
-    total_registros = cursor.fetchone()[0]
+    if not api_ok:
+        st.error("❌ Não foi possível conectar à API local")
+        st.error("Verifique se a API está rodando no seu computador")
+        
+        if "erro" in api_info:
+            st.error(f"Detalhes do erro: {api_info['erro']}")
+        
+        st.info("""
+        ### Como resolver:
+        1. Execute o script de inicialização da API:
+           ```
+           python iniciar_api.py
+           ```
+        2. Verifique se a pasta 'pedidos' contém seus arquivos Excel
+        3. Aguarde alguns segundos e recarregue a página
+        """)
+        
+        # Retornar DataFrame vazio
+        return pd.DataFrame(columns=["Número do Pedido", "Data", "Valor Total Z19-Z24", "Produto", "Quantidade", "Cidade", "Estado", "Cliente", "Telefone"])
     
-    if total_registros == 0:
-        return pd.DataFrame()
+    # Se a API está OK, mostrar status
+    st.success("✅ API local conectada com sucesso!")
+    st.caption(f"Status: {api_info.get('status', 'desconhecido')} | Arquivos: {api_info.get('total_arquivos', 0)}")
     
-    # Carregar dados do banco
-    cursor.execute("SELECT * FROM pedidos")
-    columns = [description[0] for description in cursor.description]
-    data = cursor.fetchall()
-    df = pd.DataFrame(data, columns=columns)
+    # Carregar dados do cache ou da API
+    if "df_dados" not in st.session_state or "ultima_atualizacao" not in st.session_state:
+        st.markdown("<div style='display: flex; justify-content: center; background-color: #1A1A2E; padding: 10px;' id='loading-text'>Carregando dados da API local...</div>", unsafe_allow_html=True)
+        
+        with st.spinner("Obtendo dados da API local..."):
+            # Obter todos os pedidos da API
+            dados_api = obter_todos_os_pedidos_api()
+            
+            # Converter para DataFrame
+            df = converter_dados_api_para_dataframe(dados_api)
+            
+            if df.empty:
+                st.warning("Nenhum dado foi obtido da API local. Verifique se há arquivos na pasta 'pedidos'.")
+                st.session_state.df_dados = pd.DataFrame(columns=["Número do Pedido", "Data", "Valor Total Z19-Z24", "Produto", "Quantidade", "Cidade", "Estado", "Cliente", "Telefone"])
+            else:
+                st.session_state.df_dados = df
+            
+            # Registrar hora da atualização
+            st.session_state.ultima_atualizacao = dt.now()
+            
+            st.markdown('<script>document.getElementById("loading-text").style.display = "none";</script>', unsafe_allow_html=True)
+    else:
+        # Verificar se há novos arquivos
+        arquivos = obter_arquivos_api()
+        if arquivos:
+            # Obter dados atualizados
+            dados_api = obter_todos_os_pedidos_api()
+            df_atualizado = converter_dados_api_para_dataframe(dados_api)
+            
+            # Verificar se houve mudanças
+            if len(df_atualizado) != len(st.session_state.df_dados):
+                st.session_state.df_dados = df_atualizado
+                st.session_state.ultima_atualizacao = dt.now()
+                st.experimental_rerun()
     
-    # Converter tipos de dados
-    df['data'] = pd.to_datetime(df['data'])
-    df['valor_total'] = pd.to_numeric(df['valor_total'])
-    df['quantidade'] = pd.to_numeric(df['quantidade'])
+    # Mostrar hora da última atualização
+    if "ultima_atualizacao" in st.session_state:
+        st.caption(f"Última atualização: {st.session_state.ultima_atualizacao.strftime('%d/%m/%Y %H:%M:%S')}")
     
-    # Renomear colunas para compatibilidade com o código existente
-    df = df.rename(columns={
-        'data': 'Data',
-        'valor_total': 'Valor Total Z19-Z24',
-        'produto': 'Produto',
-        'quantidade': 'Quantidade',
-        'cidade': 'Cidade',
-        'estado': 'Estado',
-        'cliente': 'Cliente',
-        'telefone': 'Telefone',
-        'arquivo_origem': 'Arquivo Origem',
-        'data_upload': 'Data Upload'
-    })
-    
-    return df
+    return st.session_state.df_dados
  
 # Função para identificar lojistas a recuperar
 def identificar_lojistas_recuperar(df):
@@ -455,7 +305,7 @@ def identificar_lojistas_recuperar(df):
     clientes_info = pd.merge(pedidos_por_cliente, ultima_compra, on='Cliente')
     
     # Calcular meses desde a última compra
-    hoje = datetime.now()
+    hoje = dt.now()
     clientes_info['meses_sem_comprar'] = (hoje - clientes_info['ultima_compra']).dt.days / 30
     
     # Filtrar clientes com mais de 3 pedidos e mais de 3 meses sem comprar
@@ -477,35 +327,174 @@ def identificar_lojistas_recuperar(df):
     
     return pd.DataFrame()
  
-# Função para rodar o Flask em uma thread separada
-def run_flask():
-    app.run(host='0.0.0.0', port=8501, debug=False)
+# Função para gerar tabela de pedidos da meta atual
+def gerar_tabela_pedidos_meta_atual(df):
+    # Filtrar para o período da meta atual (26/07 a 25/08)
+    hoje = dt.now()
+    mes_atual = hoje.month
+    ano_atual = hoje.year
+    inicio_meta = dt(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
+    fim_meta = (inicio_meta + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
+    
+    df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
+    
+    if df_meta.empty:
+        return pd.DataFrame()
+    
+    # Agrupar por número do pedido para garantir que cada pedido apareça apenas uma vez
+    # Mantendo a primeira ocorrência de cada pedido
+    df_meta = df_meta.drop_duplicates(subset=['Número do Pedido'], keep='first')
+    
+    # Selecionar as colunas desejadas
+    tabela = df_meta[["Data", "Número do Pedido", "Cliente", "Valor Total Z19-Z24"]].copy()
+    tabela.columns = ["Data do Pedido", "Número do Pedido", "Nome do Cliente", "Valor do Pedido"]
+    
+    # Formatar a data para dd/mm/aaaa
+    tabela["Data do Pedido"] = tabela["Data do Pedido"].dt.strftime("%d/%m/%Y")
+    
+    # Ordenar por data
+    tabela = tabela.sort_values("Data do Pedido")
+    
+    return tabela
  
-# Iniciar Flask em thread separada
-flask_thread = threading.Thread(target=run_flask)
-flask_thread.daemon = True
-flask_thread.start()
+# Diretório dos arquivos
+diretorio_arquivos = resource_path("pedidos")
  
-# Aguardar o Flask iniciar
-import time
-time.sleep(2)
+# Carregar arquivos de estados e municípios
+estados_df = pd.read_csv(estados_csv_path)
+municipios_df = pd.read_csv(municipios_csv_path)
+ 
+# Preparar dados de municípios para busca eficiente
+municipios_df["nome_normalizado"] = municipios_df["nome"].apply(normalize_text)
+city_list = municipios_df["nome_normalizado"].tolist()
+ 
+# Normalizar estados para matching
+estados_df["uf_normalizado"] = estados_df["uf"].apply(normalize_text)
+ 
+# Streamlit config
+st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
+ 
+# Estilo elegante e profissional
+st.markdown("""
+    <style>
+        body { background: linear-gradient(135deg, #1A1A2E, #16213E); color: #E0E0E0; font-family: 'Helvetica Neue', Arial, sans-serif; margin: 0; padding: 0; height: 100vh; width: 100vw; overflow-x: hidden; }
+        .stProgress > div > div > div > div { background: linear-gradient(90deg, #4A90E2, #50E3C2); }
+        .stSelectbox, .stMultiselect { background-color: #2A2A3D; border: 1px solid #3A3A52; border-radius: 8px; color: #E0E0E0; box-shadow: 0 2px 4px rgba(0,0,0,0.2); width: 100%; padding: 8px; }
+        .stMetric { background: linear-gradient(135deg, #2A2A3D, #1E1E2E); border: 1px solid #3A3A52; border-radius: 8px; padding: 15px; color: #E0E0E0; box-shadow: 0 2px 6px rgba(0,0,0,0.3); text-align: center; width: 100%; }
+        .section { padding: 25px; margin-bottom: 25px; border-radius: 10px; background: linear-gradient(135deg, #2A2A3D, #1E1E2E); border: 1px solid #3A3A52; box-shadow: 0 4px 12px rgba(0,0,0,0.3); width: 100%; }
+        h1, h2, h3 { color: #4A90E2; font-weight: 500; text-transform: uppercase; letter-spacing: 1px; }
+        .stApp { padding: 30px; height: 100%; width: 100%; box-sizing: border-box; }
+        .stCaption { color: #B0B0B0; font-size: 0.9em; }
+        .css-1aumxhk { width: 100% !important; min-width: 0 !important; }
+        .css-1d391kg { width: 100% !important; min-width: 0 !important; }
+        .stPlotlyChart { width: 100% !important; height: auto !important; }
+        .stSpinner { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; z-index: 1000; width: auto; height: auto; }
+        .stTabs [data-baseweb="tab-list"] { background: linear-gradient(135deg, #2A2A3D, #1E1E2E); border-bottom: 1px solid #3A3A52; padding: 0 10px; display: flex; justify-content: center; }
+        .stTabs [data-baseweb="tab"] { background-color: #2A2A3D; color: #E0E0E0; padding: 10px 20px; margin: 0 5px; border: 1px solid #3A3A52; border-bottom: none; border-radius: 5px 5px 0 0; cursor: pointer; transition: background-color 0.3s; }
+        .stTabs [data-baseweb="tab"]:hover { background-color: #3A3A52; }
+        .stTabs [data-baseweb="tab"][aria-selected="true"] { background-color: #1E1E2E; color: #4A90E2; font-weight: bold; }
+        .filter-container { display: flex; gap: 15px; align-items: center; }
+        .filter-label { font-weight: 500; color: #4A90E2; margin-right: 10px; }
+        /* Centralizar gráficos */
+        div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stPlotlyChart"]) {
+            display: flex;
+            justify-content: center;
+        }
+    </style>
+""", unsafe_allow_html=True)
  
 # Placeholder para atualizar o conteúdo
 placeholder = st.empty()
  
-# Carregar dados do banco de dados
-df = carregar_dados_do_banco()
+# Adicionar painel de status da API
+st.sidebar.title("Status da API Local")
+ 
+# Verificar status da API
+api_ok, api_info = verificar_api_local()
+ 
+if api_ok:
+    st.sidebar.success("✅ API Conectada")
+    st.sidebar.caption(f"Arquivos: {api_info.get('total_arquivos', 0)}")
+    st.sidebar.caption(f"Pasta: {api_info.get('pasta_pedidos', 'N/A')}")
+    
+    # Botão para recarregar dados
+    if st.sidebar.button("🔄 Recarregar Dados"):
+        # Limpar cache
+        if "df_dados" in st.session_state:
+            del st.session_state.df_dados
+        if "ultima_atualizacao" in st.session_state:
+            del st.session_state.ultima_atualizacao
+        st.experimental_rerun()
+    
+    # Botão para limpar duplicatas
+    if st.sidebar.button("🧹 Limpar Duplicatas"):
+        if "df_dados" in st.session_state:
+            st.session_state.df_dados = limpar_duplicatas(st.session_state.df_dados)
+            st.experimental_rerun()
+    
+    # Mostrar arquivos disponíveis
+    st.sidebar.subheader("Arquivos Disponíveis")
+    arquivos = obter_arquivos_api()
+    if arquivos:
+        for arquivo in arquivos:
+            st.sidebar.text(f"📄 {arquivo}")
+    else:
+        st.sidebar.warning("Nenhum arquivo encontrado")
+else:
+    st.sidebar.error("❌ API Offline")
+    st.sidebar.info("Execute a API local no seu computador")
+    
+    # Mostrar instruções
+    with st.sidebar.expander("Como configurar"):
+        st.markdown("""
+        ### Passos para configurar:
+        1. Execute o script de inicialização:
+           ```
+           python iniciar_api.py
+           ```
+        2. Coloque seus arquivos na pasta 'pedidos'
+        3. Recarregue esta página
+        """)
+ 
+# Adicionar botão para verificar arquivos
+if st.sidebar.button("🔍 Verificar Arquivos"):
+    arquivos = obter_arquivos_api()
+    if arquivos:
+        st.sidebar.success(f"Encontrados {len(arquivos)} arquivos")
+        for arquivo in arquivos:
+            st.sidebar.text(f"📄 {arquivo}")
+    else:
+        st.sidebar.warning("Nenhum arquivo encontrado")
+ 
+# Carregar dados inicialmente
+df = carregar_dados_api()
  
 if not df.empty:
+    # DataFrame principal
+    df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+    df["Valor Total Z19-Z24"] = pd.to_numeric(df["Valor Total Z19-Z24"], errors="coerce")
+    df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce")
+    df["Período_Mês"] = df["Data"].dt.to_period("M")
+    df = df.dropna(subset=["Data"])
+ 
     # Período de fechamento atual: 26/07/2025 a 25/08/2025
-    hoje = datetime.now()
+    hoje = dt.now()
     mes_atual = hoje.month
     ano_atual = hoje.year
-    inicio_meta = datetime(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
+    inicio_meta = dt(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
     fim_meta = (inicio_meta + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
  
     df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
-    valor_total_vendido = df_meta["Valor Total Z19-Z24"].sum() if not df_meta.empty else 0
+    
+    # Calcular valor total vendido sem duplicatas
+    df_meta_sem_duplicatas = df_meta.drop_duplicates(subset=['Número do Pedido'])
+    valor_total_vendido = df_meta_sem_duplicatas["Valor Total Z19-Z24"].sum() if not df_meta_sem_duplicatas.empty else 0
+    
+    # Calcular estatísticas
+    total_pedidos = len(df_meta)
+    pedidos_unicos = len(df_meta_sem_duplicatas)
+    duplicatas = total_pedidos - pedidos_unicos
+    
     meta_total = 200_000
     percentual_meta = min(1.0, valor_total_vendido / meta_total)
     valor_restante = max(0, meta_total - valor_total_vendido)
@@ -515,14 +504,14 @@ if not df.empty:
         st.markdown("<hr style='border: 1px solid #3A3A52;'>", unsafe_allow_html=True)
  
         st.progress(percentual_meta, text=f"Progresso da Meta: {percentual_meta*100:.1f}%")
-        st.caption(f"Número de pedidos processados: {len(df_meta)}")
+        st.caption(f"Número de pedidos processados: {total_pedidos} | Pedidos únicos: {pedidos_unicos} | Duplicatas: {duplicatas}")
  
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Vendido (Z19-Z24)", f"R$ {valor_total_vendido:,.2f}")
         col2.metric("Meta", f"R$ {meta_total:,.2f}")
         col3.metric("Restante", f"R$ {valor_restante:,.2f}")
  
-        tab1, tab2, tab3 = st.tabs(["Desempenho Individual", "Análise de Clientes", "Administração"])
+        tab1, tab2 = st.tabs(["Desempenho Individual", "Análise de Clientes"])
  
         with tab1:
             anos_disponiveis_local = sorted(df["Data"].dt.year.unique())
@@ -540,7 +529,7 @@ if not df.empty:
                 mes_ano = periodo_selecionado_local.split(" / ")
                 mes = list(calendar.month_abbr).index(mes_ano[0])
                 ano = int(mes_ano[1])
-                inicio_periodo_local = datetime(ano, mes, 26).replace(hour=0, minute=0, second=0)
+                inicio_periodo_local = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
                 fim_periodo_local = (inicio_periodo_local + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
                 df_desempenho_local = df_desempenho_local[(df_desempenho_local["Data"] >= inicio_periodo_local) & (df_desempenho_local["Data"] <= fim_periodo_local)]
             elif ano_selecionado_local != "Todos":
@@ -560,12 +549,12 @@ if not df.empty:
                     mes_ano = periodo_selecionado_local.split(" / ")
                     mes = list(calendar.month_abbr).index(mes_ano[0])
                     ano = int(mes_ano[1])
-                    inicio_2025 = datetime(ano, mes, 26).replace(hour=0, minute=0, second=0)
+                    inicio_2025 = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
                     fim_2025 = (inicio_2025 + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
                     inicio_2024 = inicio_2025 - relativedelta(years=1)
                     fim_2024 = fim_2025 - relativedelta(years=1)
                 else:
-                    inicio_2025 = datetime(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
+                    inicio_2025 = dt(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
                     fim_2025 = (inicio_2025 + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
                     inicio_2024 = inicio_2025 - relativedelta(years=1)
                     fim_2024 = fim_2025 - relativedelta(years=1)
@@ -599,12 +588,12 @@ if not df.empty:
                     mes_ano = periodo_selecionado_local.split(" / ")
                     mes = list(calendar.month_abbr).index(mes_ano[0])
                     ano = int(mes_ano[1])
-                    inicio_atual = datetime(ano, mes, 26).replace(hour=0, minute=0, second=0)
+                    inicio_atual = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
                     fim_atual = (inicio_atual + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
                     inicio_anterior = inicio_atual - relativedelta(months=1)
                     fim_anterior = fim_atual - relativedelta(months=1)
                 else:
-                    inicio_atual = datetime(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
+                    inicio_atual = dt(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
                     fim_atual = (inicio_atual + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
                     inicio_anterior = inicio_atual - relativedelta(months=1)
                     fim_anterior = fim_atual - relativedelta(months=1)
@@ -641,7 +630,7 @@ if not df.empty:
                     mes_ano = periodo_selecionado_local.split(" / ")
                     mes = list(calendar.month_abbr).index(mes_ano[0])
                     ano = int(mes_ano[1])
-                    inicio_periodo = datetime(ano, mes, 26).replace(hour=0, minute=0, second=0)
+                    inicio_periodo = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
                     fim_periodo = (inicio_periodo + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
                     df_periodo = df_desempenho_local[(df_desempenho_local["Data"] >= inicio_periodo) & (df_desempenho_local["Data"] <= fim_periodo)].copy()
                 else:
@@ -682,6 +671,24 @@ if not df.empty:
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 st.plotly_chart(fig_categoria, use_container_width=True)
+                
+                # Botão para mostrar tabela de pedidos da meta atual
+                if st.button("Mostrar Tabela de Pedidos da Meta Atual"):
+                    tabela_pedidos = gerar_tabela_pedidos_meta_atual(df)
+                    if not tabela_pedidos.empty:
+                        st.subheader("Tabela de Pedidos da Meta Atual (26/07 a 25/08)")
+                        
+                        # Verificar duplicatas
+                        verificar_duplicatas(tabela_pedidos)
+                        
+                        # Exibir tabela
+                        st.dataframe(tabela_pedidos.style.format({'Valor do Pedido': 'R$ {:,.2f}'}), use_container_width=True)
+                        
+                        # Mostrar estatísticas
+                        total_unico = tabela_pedidos['Valor do Pedido'].sum()
+                        st.caption(f"Valor total de pedidos únicos: R$ {total_unico:,.2f}")
+                    else:
+                        st.warning("Não há pedidos no período da meta atual.")
  
         with tab2:
             # Identificar lojistas a recuperar
@@ -1011,131 +1018,9 @@ if not df.empty:
             st.subheader("Dados Detalhados dos Lojistas")
             st.dataframe(top_lojistas.style.format({'Valor Total Z19-Z24': 'R$ {:,.2f}'}), use_container_width=True)
  
-        with tab3:
-            st.subheader("Administração do Sistema")
-            
-            # Seção 1: Status do Sistema
-            st.markdown("### Status do Sistema")
-            
-            # Obter estatísticas do banco de dados
-            cursor = db_conn.cursor()
-            
-            # Total de registros
-            cursor.execute("SELECT COUNT(*) FROM pedidos")
-            total_registros = cursor.fetchone()[0]
-            
-            # Última sincronização
-            cursor.execute("SELECT MAX(data_sync) FROM sync_log")
-            ultima_sync = cursor.fetchone()[0]
-            
-            # Total de sincronizações
-            cursor.execute("SELECT COUNT(*) FROM sync_log")
-            total_syncs = cursor.fetchone()[0]
-            
-            # Exibir métricas
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total de Registros", total_registros)
-            col2.metric("Última Sincronização", ultima_sync if ultima_sync else "Nunca")
-            col3.metric("Total de Sincronizações", total_syncs)
-            
-            # Seção 2: Logs de Sincronização
-            st.markdown("### Logs de Sincronização")
-            
-            # Obter logs recentes
-            cursor.execute("SELECT * FROM sync_log ORDER BY data_sync DESC LIMIT 50")
-            logs = cursor.fetchall()
-            
-            if logs:
-                log_df = pd.DataFrame(logs, columns=['ID', 'Cliente ID', 'Arquivo', 'Data', 'Status', 'Registros'])
-                st.dataframe(log_df, use_container_width=True)
-            else:
-                st.info("Nenhum log de sincronização encontrado")
-            
-            # Seção 3: Configurações da API
-            st.markdown("### Configurações da API")
-            
-            # Exibir token da API
-            api_token = st.secrets.get("API_TOKEN", "seu_token_secreto")
-            st.code(f"Token da API: {api_token}", language="bash")
-            
-            # Endpoint da API
-            base_url = request.host_url
-            st.code(f"URL da API: {base_url}api/", language="bash")
-            
-            # Exemplo de uso
-            st.markdown("### Exemplo de Uso da API")
-            st.code(f"""
-# Upload de arquivo
-curl -X POST "{base_url}api/upload" \\
-  -H "Authorization: Bearer {api_token}" \\
-  -F "file=@arquivo.xlsx" \\
-  -F "client_id=seu_cliente_id"
- 
-# Verificar status
-curl -X GET "{base_url}api/status" \\
-  -H "Authorization: Bearer {api_token}"
- 
-# Listar arquivos sincronizados
-curl -X GET "{base_url}api/synced_files?client_id=seu_cliente_id" \\
-  -H "Authorization: Bearer {api_token}"
-            """, language="bash")
-            
-            # Seção 4: Informações para Desenvolvedores
-            st.markdown("### Informações para Desenvolvedores")
-            
-            st.markdown("""
-            #### Estrutura do Banco de Dados
-            
-            **Tabela: pedidos**
-            - id: INTEGER (Primary Key)
-            - data: TEXT
-            - valor_total: REAL
-            - produto: TEXT
-            - quantidade: REAL
-            - cidade: TEXT
-            - estado: TEXT
-            - cliente: TEXT
-            - telefone: TEXT
-            - arquivo_origem: TEXT
-            - data_upload: TEXT
-            
-            **Tabela: sync_log**
-            - id: INTEGER (Primary Key)
-            - cliente_id: TEXT
-            - arquivo: TEXT
-            - data_sync: TEXT
-            - status: TEXT
-            - registros: INTEGER
-            """)
-            
-            # Seção 5: Botão para limpar dados (apenas para desenvolvimento)
-            if st.checkbox("Mostrar opções avançadas (apenas para desenvolvimento)"):
-                if st.button("Limpar todos os dados"):
-                    if st.warning("Tem certeza que deseja limpar todos os dados? Esta ação não pode ser desfeita."):
-                        cursor.execute("DELETE FROM pedidos")
-                        cursor.execute("DELETE FROM sync_log")
-                        db_conn.commit()
-                        st.success("Todos os dados foram limpos!")
-                        st.experimental_rerun()
- 
+        if st.button("Verificar Arquivos na Pasta 'pedidos'"):
+            arquivos = [f for f in os.listdir(diretorio_arquivos) if f.endswith(".xlsx")]
+            st.write("Arquivos detectados:", arquivos if arquivos else "Nenhum arquivo .xlsx encontrado.")
 else:
     with placeholder.container():
-        st.warning("Nenhum dado disponível. Use a API para enviar arquivos ou configure o agente de sincronização.")
-        
-        # Instruções para o usuário
-        st.markdown("""
-        ### Como começar
-        
-        1. **Configure o agente de sincronização**:
-           - Baixe o agente desktop
-           - Configure o arquivo `config.json` com suas credenciais
-           - Execute o agente na pasta onde estão os arquivos .xlsx
-        
-        2. **Use a API diretamente**:
-           - Faça upload dos arquivos usando o endpoint `/api/upload`
-           - Use o token de autenticação fornecido acima
-        
-        3. **Verifique o status**:
-           - Use o endpoint `/api/status` para verificar se o sistema está online
-           - Consulte os logs na aba "Administração"
-        """)
+        st.warning("Nenhum dado disponível. Adicione arquivos .xlsx na pasta 'pedidos'.")
