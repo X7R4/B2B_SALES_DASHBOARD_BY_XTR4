@@ -36,12 +36,12 @@ municipios_csv_path = resource_path("municipios.csv")
 def obter_url_api():
     """Obtém a URL da API a partir de um arquivo ou configuração"""
     # Tentar obter a URL do arquivo ngrok_url.txt
-    if os.path.exists("ngrok_url.txt"):
-        with open("ngrok_url.txt", "r") as f:
+    if os.path.exists("serveo_url.txt"):
+        with open("serveo_url.txt", "r") as f:
             return f.read().strip()
     
     # Se não existir, usar localhost
-    return "http://localhost:8000"
+    return "http://localhost:8081"
  
 # Configuração da API local - agora dinâmica
 API_URL = obter_url_api()
