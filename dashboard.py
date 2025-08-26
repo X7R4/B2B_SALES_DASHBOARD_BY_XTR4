@@ -15,64 +15,32 @@ import sys
 from datetime import datetime as dt
 import time
 import json
-import base64
 
 # Bibliotecas Google
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 
 # ===== CONFIGURAÇÃO =====
 # Substitua pelo ID da sua pasta no Google Drive
-FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # EXEMPLO: '1ABC123xyz456' - ALTERE ESTE VALOR!
+FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # ALTERE ESTE VALOR!
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+
+# Configurar credenciais do Service Account
+SERVICE_ACCOUNT_FILE = 'dashboard-470221-497b6659fe89.json'  # ALTERE ESTE VALOR!
 
 # ===== FUNÇÕES DO GOOGLE DRIVE =====
 
 def authenticate_google_drive():
-    """Autentica com o Google Drive usando OAuth 2.0"""
-    creds = None
-    
-    # Verificar se já existe um token salvo
-    if os.path.exists('token.json'):
-        try:
-            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-        except:
-            pass
-    
-    # Se não há credenciais válidas, fazer login
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except:
-                creds = None
-        
-        if not creds:
-            try:
-                # Fazer o fluxo de autenticação
-                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-                creds = flow.run_local_server(port=0)
-                
-                # Salvar as credenciais para a próxima execução
-                with open('token.json', 'w') as token:
-                    token.write(creds.to_json())
-            except Exception as e:
-                st.error(f"Erro na autenticação: {e}")
-                return None
-    
-    return creds
-
-def get_folder_id_from_url(url):
-    """Extrai o ID da pasta de uma URL do Google Drive"""
-    if '/folders/' in url:
-        return url.split('/folders/')[1].split('?')[0]
-    elif 'id=' in url:
-        return url.split('id=')[1].split('&')[0]
-    return None
+    """Autentica com o Google Drive usando Service Account"""
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+        return creds
+    except Exception as e:
+        st.error(f"Erro ao carregar credenciais: {e}")
+        return None
 
 def list_drive_files(service, folder_id):
     """Lista todos os arquivos Excel de uma pasta no Google Drive"""
@@ -110,7 +78,7 @@ def download_drive_file(service, file_id, file_name):
         st.error(f"Erro ao baixar {file_name}: {e}")
         return pd.DataFrame()
 
-# ===== FUNÇÕES DE PROCESSAMENTO (MANTIDAS DO ORIGINAL) =====
+# ===== FUNÇÕES DE PROCESSAMENTO (MANTIDAS) =====
 
 def process_excel_data(df, file_name):
     """Processa os dados do Excel na mesma estrutura que a API usava"""
