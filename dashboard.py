@@ -16,7 +16,7 @@ import requests
 import json
 from datetime import datetime as dt
 import time
-
+ 
 # Função para obter caminho de recursos (essencial para PyInstaller)
 def resource_path(relative_path):
     """ Obter caminho absoluto para recursos, funciona para dev e PyInstaller """
@@ -27,11 +27,11 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     
     return os.path.join(base_path, relative_path)
-
+ 
 # Modificar os caminhos dos arquivos CSV
 estados_csv_path = resource_path("estados.csv")
 municipios_csv_path = resource_path("municipios.csv")
-
+ 
 # Função para obter a URL da API a partir de um arquivo ou configuração
 def obter_url_api():
     """Obtém a URL da API a partir de um arquivo ou configuração"""
@@ -42,10 +42,10 @@ def obter_url_api():
     
     # Se não existir, usar localhost
     return "http://localhost:8000"
-
+ 
 # Configuração da API local - agora dinâmica
 API_URL = obter_url_api()
-
+ 
 # Funções de integração com API
 def verificar_api_local():
     """Verifica se a API local está acessível"""
@@ -57,7 +57,7 @@ def verificar_api_local():
             return False, {"erro": f"Status code: {response.status_code}"}
     except Exception as e:
         return False, {"erro": str(e)}
-
+ 
 def obter_arquivos_api():
     """Obtém a lista de arquivos da API local"""
     try:
@@ -68,7 +68,7 @@ def obter_arquivos_api():
             return []
     except Exception as e:
         return []
-
+ 
 def obter_dados_arquivo_api(nome_arquivo):
     """Obtém os dados de um arquivo específico da API local"""
     try:
@@ -79,7 +79,7 @@ def obter_dados_arquivo_api(nome_arquivo):
             return None
     except Exception as e:
         return None
-
+ 
 def obter_todos_os_pedidos_api():
     """Obtém todos os pedidos de todos os arquivos da API local"""
     try:
@@ -90,7 +90,7 @@ def obter_todos_os_pedidos_api():
             return {"pedidos": [], "total": 0}
     except Exception as e:
         return {"pedidos": [], "total": 0}
-
+ 
 def converter_dados_api_para_dataframe(dados_api):
     """Converte os dados da API para o formato DataFrame esperado pelo dashboard"""
     if not dados_api or "pedidos" not in dados_api:
@@ -121,7 +121,7 @@ def converter_dados_api_para_dataframe(dados_api):
     df = df.drop_duplicates(subset=['Número do Pedido', 'Data'])
     
     return df
-
+ 
 def verificar_duplicatas(df):
     """Verifica e relata duplicatas no DataFrame"""
     # Verificar duplicatas baseado no número do pedido
@@ -142,7 +142,7 @@ def verificar_duplicatas(df):
         st.success("✅ Nenhuma duplicata encontrada!")
         st.caption(f"Total de pedidos: {len(df)} | Todos são únicos")
         return False
-
+ 
 def limpar_duplicatas(df):
     """Remove duplicatas do DataFrame"""
     df_limpo = df.drop_duplicates(subset=['Número do Pedido', 'Data'])
@@ -151,14 +151,14 @@ def limpar_duplicatas(df):
     st.caption(f"Registros antes: {len(df)} | Registros depois: {len(df_limpo)}")
     
     return df_limpo
-
+ 
 # Função para normalizar texto (remover acentos e converter para maiúsculas)
 def normalize_text(text):
     if pd.isna(text):
         return ""
     text = ''.join(c for c in unicodedata.normalize('NFD', str(text)) if unicodedata.category(c) != 'Mn')
     return text.strip().upper()
-
+ 
 # Função para encontrar a cidade mais próxima com fuzzy matching considerando o estado
 def find_closest_city_with_state(city, state, city_list, municipios_df, estados_df, threshold=70):
     if not city or city == "DESCONHECIDO":
@@ -199,19 +199,19 @@ def find_closest_city_with_state(city, state, city_list, municipios_df, estados_
             return matched_city, city_info.iloc[0]['latitude'], city_info.iloc[0]['longitude']
     
     return None, None, None
-
+ 
 # Função para obter o código do estado a partir da sigla normalizada
 def get_estado_codigo(estado_normalizado, estados_df):
     estado_info = estados_df[estados_df['uf_normalizado'] == estado_normalizado]
     if not estado_info.empty:
         return estado_info.iloc[0]['codigo_uf']
     return None
-
+ 
 # Função para contar dias úteis no período
 def contar_dias_uteis(inicio, fim):
     dias = pd.date_range(start=inicio, end=fim, freq='B')
     return len(dias)
-
+ 
 # Função para determinar a semana do mês com base no intervalo de 26 a 25
 def get_week(data, start_date, end_date):
     total_days = (end_date - start_date).days + 1
@@ -220,7 +220,7 @@ def get_week(data, start_date, end_date):
     days_since_start = (data - start_date).days
     week = ((days_since_start * 4) // total_days) + 1 if days_since_start >= 0 else 0
     return min(max(week, 1), 4)
-
+ 
 # Função para classificar produtos nas categorias especificadas
 def classificar_produto(descricao):
     kits_ar = ["KIT 1", "KIT 2", "KIT 3", "KIT 4", "KIT 5", "KIT 6", "KIT 7", 
@@ -232,7 +232,7 @@ def classificar_produto(descricao):
         return "KITS ROSCA"
     else:
         return "PEÇAS AVULSAS"
-
+ 
 # Função para carregar dados usando a API local
 def carregar_dados_api():
     """Carrega dados usando a API local"""
@@ -308,7 +308,7 @@ def carregar_dados_api():
         st.caption(f"Última atualização: {st.session_state.ultima_atualizacao.strftime('%d/%m/%Y %H:%M:%S')}")
     
     return st.session_state.df_dados
-
+ 
 # Função para identificar lojistas a recuperar
 def identificar_lojistas_recuperar(df):
     # Calcular o número de pedidos por cliente
@@ -342,7 +342,7 @@ def identificar_lojistas_recuperar(df):
         return lojistas_recuperar
     
     return pd.DataFrame()
-
+ 
 # Função para gerar tabela de pedidos da meta atual
 def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     """Gera tabela de pedidos para o período da meta especificado"""
@@ -366,24 +366,24 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     tabela = tabela.sort_values("Data do Pedido")
     
     return tabela
-
+ 
 # Diretório dos arquivos
 diretorio_arquivos = resource_path("pedidos")
-
+ 
 # Carregar arquivos de estados e municípios
 estados_df = pd.read_csv(estados_csv_path)
 municipios_df = pd.read_csv(municipios_csv_path)
-
+ 
 # Preparar dados de municípios para busca eficiente
 municipios_df["nome_normalizado"] = municipios_df["nome"].apply(normalize_text)
 city_list = municipios_df["nome_normalizado"].tolist()
-
+ 
 # Normalizar estados para matching
 estados_df["uf_normalizado"] = estados_df["uf"].apply(normalize_text)
-
+ 
 # Streamlit config
 st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
-
+ 
 # Estilo elegante e profissional
 st.markdown("""
     <style>
@@ -421,26 +421,26 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
-
+ 
 # Placeholder para atualizar o conteúdo
 placeholder = st.empty()
-
+ 
 # Adicionar painel de configuração da API no sidebar
 st.sidebar.title("Configuração da API")
-
+ 
 # Obter URL atual
 api_url_atual = obter_url_api()
-
+ 
 # Permitir que o usuário insira uma URL manualmente
 api_url_personalizada = st.sidebar.text_input(
     "URL da API Local",
     value=api_url_atual,
     help="Insira a URL pública da sua API local (ex: https://abc123.ngrok.io)"
 )
-
+ 
 # Atualizar a URL da API
 API_URL = api_url_personalizada
-
+ 
 # Botão para testar a conexão
 if st.sidebar.button("Testar Conexão"):
     try:
@@ -454,10 +454,10 @@ if st.sidebar.button("Testar Conexão"):
             st.sidebar.error(f"❌ Erro: Status {response.status_code}")
     except Exception as e:
         st.sidebar.error(f"❌ Erro de conexão: {str(e)}")
-
+ 
 # Verificar status da API
 api_ok, api_info = verificar_api_local()
-
+ 
 if api_ok:
     # Botão para recarregar dados
     if st.sidebar.button("🔄 Recarregar Dados"):
@@ -595,9 +595,14 @@ if api_ok:
                 
                 # Encontrar o índice do período selecionado
                 periodo_selecionado = f"{calendar.month_abbr[mes_selecionado_num]} / {ano_selecionado}"
-                if periodo_selecionado in periodos_fechamento:
-                    indice_periodo = periodos_fechamento.tolist().index(periodo_selecionado)
-                else:
+                
+                # CORREÇÃO: Verificar se o período está na lista e obter o índice corretamente
+                try:
+                    if periodo_selecionado in periodos_fechamento:
+                        indice_periodo = periodos_fechamento.index(periodo_selecionado)
+                    else:
+                        indice_periodo = 0
+                except:
                     indice_periodo = 0
                 
                 periodo_selecionado_local = st.selectbox(
