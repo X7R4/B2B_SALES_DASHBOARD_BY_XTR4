@@ -233,6 +233,72 @@ def classificar_produto(descricao):
     else:
         return "PEÇAS AVULSAS"
  
+# Função para calcular comissões e bônus
+def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
+    """Calcula comissões e bônus com base nas vendas do período"""
+    # Filtrar dados para o período da meta
+    df_periodo = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
+    
+    # Remover duplicatas para calcular o valor total corretamente
+    df_periodo = df_periodo.drop_duplicates(subset=['Número do Pedido'])
+    
+    # Calcular valor total vendido
+    valor_total_vendido = df_periodo["Valor Total Z19-Z24"].sum()
+    
+    # Classificar produtos por categoria
+    df_periodo["Categoria"] = df_periodo["Produto"].apply(classificar_produto)
+    
+    # Calcular valor por categoria
+    valor_kit_ar = df_periodo[df_periodo["Categoria"] == "KITS AR"]["Valor Total Z19-Z24"].sum()
+    valor_pecas_avulsas = df_periodo[df_periodo["Categoria"].isin(["PEÇAS AVULSAS", "KITS ROSCA"])]["Valor Total Z19-Z24"].sum()
+    
+    # Definir percentuais de comissão
+    percentual_kit_ar = 0.007  # 0.7%
+    percentual_pecas_avulsas = 0.005  # 0.5%
+    
+    # Calcular comissões
+    comissao_kit_ar = 0
+    comissao_pecas_avulsas = 0
+    
+    if valor_total_vendido > 150000:  # Maior que 150 mil
+        comissao_kit_ar = valor_kit_ar * percentual_kit_ar
+        comissao_pecas_avulsas = valor_pecas_avulsas * percentual_pecas_avulsas
+    
+    # Calcular bônus
+    bonus = 0
+    valor_por_bonus = 200  # R$ 200,00 a cada 50 mil vendido
+    
+    # Calcular quantos bônus de 50 mil foram atingidos
+    quantidade_bonus = int(valor_total_vendido // 50000)
+    bonus = quantidade_bonus * valor_por_bonus
+    
+    # Verificar se a meta mensal foi atingida (R$ 600,00 de premiação)
+    meta_atingida = valor_total_vendido >= 200000  # Meta de R$ 200.000
+    premio_meta = 600 if meta_atingida else 0
+    
+    # Calcular ganhos totais
+    ganhos_totais = comissao_kit_ar + comissao_pecas_avulsas + bonus + premio_meta
+    
+    # Criar DataFrame com os resultados
+    resultados = pd.DataFrame({
+        "Descrição": [
+            "Comissão de KIT AR (0.7%)",
+            "Comissão de Peças Avulsas e Kit Rosca (0.5%)",
+            "Bônus (R$ 200,00 a cada 50 mil vendido)",
+            "Prêmio Meta Mensal (se atingida)",
+            "Ganhos Estimados"
+        ],
+        "Valor (R$)": [
+            comissao_kit_ar,
+            comissao_pecas_avulsas,
+            bonus,
+            premio_meta,
+            ganhos_totais
+        ]
+    })
+    
+    return resultados, valor_total_vendido, meta_atingida
+ 
 # Função para carregar dados usando a API local
 def carregar_dados_api():
     """Carrega dados usando a API local"""
@@ -419,6 +485,22 @@ st.markdown("""
             margin-bottom: 20px;
             box-shadow: 0 2px 6px rgba(0,0,0,0.3);
         }
+        /* Estilo para destacar os ganhos */
+        .ganhos-destaque {
+            background: linear-gradient(135deg, #2A2A3D, #1E1E2E);
+            border: 1px solid #3A3A52;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            text-align: center;
+        }
+        .ganhos-valor {
+            font-size: 24px;
+            font-weight: bold;
+            color: #50E3C2;
+            margin-top: 10px;
+        }
     </style>
 """, unsafe_allow_html=True)
  
@@ -587,7 +669,8 @@ if api_ok:
             col2.metric("Meta", f"R$ {meta_total:,.2f}")
             col3.metric("Restante", f"R$ {valor_restante:,.2f}")
             
-            tab1, tab2 = st.tabs(["Desempenho Individual", "Análise de Clientes"])
+            # Criar abas com a nova aba de cálculo de meta
+            tab1, tab2, tab3 = st.tabs(["Desempenho Individual", "Análise de Clientes", "Cálculo de Meta"])
             
             with tab1:
                 # Obter períodos de fechamento para o ano selecionado
@@ -1070,6 +1153,41 @@ if api_ok:
                 # Seção 4: Tabela (ocupando todo o espaço)
                 st.subheader("Dados Detalhados dos Lojistas")
                 st.dataframe(top_lojistas.style.format({'Valor Total Z19-Z24': 'R$ {:,.2f}'}), use_container_width=True)
+            
+            # NOVA ABA: Cálculo de Meta
+            with tab3:
+                st.subheader(f"Cálculo de Comissões e Bônus - {inicio_meta.strftime('%d/%m/%Y')} a {fim_meta.strftime('%d/%m/%Y')}")
+                
+                # Calcular comissões e bônus
+                resultados, valor_total_vendido, meta_atingida = calcular_comissoes_e_bonus(df, inicio_meta, fim_meta)
+                
+                # Exibir informações sobre o período
+                col_info1, col_info2 = st.columns(2)
+                col_info1.metric("Valor Total Vendido", f"R$ {valor_total_vendido:,.2f}")
+                col_info2.metric("Meta Mensal Atingida", "Sim" if meta_atingida else "Não")
+                
+                # Exibir tabela de cálculos
+                st.subheader("Detalhamento dos Cálculos")
+                st.dataframe(resultados.style.format({'Valor (R$)': 'R$ {:,.2f}'}), use_container_width=True)
+                
+                # Exibir ganhos estimados com destaque
+                st.markdown('<div class="ganhos-destaque">', unsafe_allow_html=True)
+                st.markdown("### Ganhos Estimados")
+                ganhos_totais = resultados.iloc[-1, 1]  # Último valor da tabela
+                st.markdown(f'<div class="ganhos-valor">R$ {ganhos_totais:,.2f}</div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                # Adicionar informações explicativas
+                with st.expander("Regras de Cálculo"):
+                    st.markdown("""
+                    ### Percentuais de Comissão:
+                    - **KIT AR**: 0.7% (aplicado se valor total vendido > R$ 150.000,00)
+                    - **Peças Avulsas e Kit Rosca**: 0.5% (aplicado se valor total vendido > R$ 150.000,00)
+                    
+                    ### Bônus:
+                    - **Bônus por Volume**: R$ 200,00 a cada R$ 50.000,00 vendido
+                    - **Prêmio Meta Mensal**: R$ 600,00 (se meta de R$ 200.000,00 for atingida)
+                    """)
             
             if st.button("Verificar Arquivos na Pasta 'pedidos'"):
                 arquivos = [f for f in os.listdir(diretorio_arquivos) if f.endswith(".xlsx")]
