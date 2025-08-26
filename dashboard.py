@@ -50,7 +50,7 @@ API_URL = obter_url_api()
 def verificar_api_local():
     """Verifica se a API local está acessível"""
     try:
-        response = requests.get(f"{API_URL}/api/saude", timeout=5)
+        response = requests.get(f"{API_URL}/api/saude", timeout=50000)
         if response.status_code == 200:
             return True, response.json()
         else:
@@ -61,7 +61,7 @@ def verificar_api_local():
 def obter_arquivos_api():
     """Obtém a lista de arquivos da API local"""
     try:
-        response = requests.get(f"{API_URL}/api/arquivos", timeout=10)
+        response = requests.get(f"{API_URL}/api/arquivos", timeout=10000)
         if response.status_code == 200:
             return response.json().get("arquivos", [])
         else:
