@@ -742,6 +742,43 @@ with col2:
 
 # ===== CONTEÚDO PRINCIPAL =====
 
+ 
+    # Calcular período da meta com base nos filtros
+    if mes_selecionado_num == 1:
+        inicio_meta = dt(ano_selecionado - 1, 12, 26).replace(hour=0, minute=0, second=0)
+        fim_meta = dt(ano_selecionado, 1, 25).replace(hour=23, minute=59, second=59)
+    else:
+        inicio_meta = dt(ano_selecionado, mes_selecionado_num - 1, 26).replace(hour=0, minute=0, second=0)
+        fim_meta = dt(ano_selecionado, mes_selecionado_num, 25).replace(hour=23, minute=59, second=59)
+    
+    # Filtrar dados para o período da meta
+    df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
+    
+    # Calcular valor total vendido sem duplicatas
+    df_meta_sem_duplicatas = df_meta.drop_duplicates(subset=['Número do Pedido'])
+    valor_total_vendido = df_meta_sem_duplicatas["Valor Total Z19-Z24"].sum() if not df_meta_sem_duplicatas.empty else 0
+    
+    # Calcular estatísticas
+    total_pedidos = len(df_meta)
+    pedidos_unicos = len(df_meta_sem_duplicatas)
+    duplicatas = total_pedidos - pedidos_unicos
+    
+    meta_total = 200_000
+    percentual_meta = min(1.0, valor_total_vendido / meta_total)
+    valor_restante = max(0, meta_total - valor_total_vendido)
+    
+    # Exibir meta mensal
+    st.subheader(f"META MENSAL PERÍODO: {inicio_meta.strftime('%d/%m/%Y')} A {fim_meta.strftime('%d/%m/%Y')}")
+    st.markdown("<hr style='border: 1px solid #3A3A52;'>", unsafe_allow_html=True)
+    
+    st.progress(percentual_meta, text=f"Progresso da Meta: {percentual_meta*100:.1f}%")
+    st.caption(f"Número de pedidos processados: {total_pedidos} | Pedidos únicos: {pedidos_unicos} | Duplicatas: {duplicatas}")
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Vendido (Z19-Z24)", f"R$ {valor_total_vendido:,.2f}")
+    col2.metric("Meta", f"R$ {meta_total:,.2f}")
+    col3.metric("Restante", f"R$ {valor_restante:,.2f}")
+
 if not df.empty:
     # Processar dados
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
@@ -794,42 +831,7 @@ if not df.empty:
         mes_selecionado_num = meses_disponiveis[nomes_meses.index(mes_selecionado)]
     
     st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Calcular período da meta com base nos filtros
-    if mes_selecionado_num == 1:
-        inicio_meta = dt(ano_selecionado - 1, 12, 26).replace(hour=0, minute=0, second=0)
-        fim_meta = dt(ano_selecionado, 1, 25).replace(hour=23, minute=59, second=59)
-    else:
-        inicio_meta = dt(ano_selecionado, mes_selecionado_num - 1, 26).replace(hour=0, minute=0, second=0)
-        fim_meta = dt(ano_selecionado, mes_selecionado_num, 25).replace(hour=23, minute=59, second=59)
-    
-    # Filtrar dados para o período da meta
-    df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
-    
-    # Calcular valor total vendido sem duplicatas
-    df_meta_sem_duplicatas = df_meta.drop_duplicates(subset=['Número do Pedido'])
-    valor_total_vendido = df_meta_sem_duplicatas["Valor Total Z19-Z24"].sum() if not df_meta_sem_duplicatas.empty else 0
-    
-    # Calcular estatísticas
-    total_pedidos = len(df_meta)
-    pedidos_unicos = len(df_meta_sem_duplicatas)
-    duplicatas = total_pedidos - pedidos_unicos
-    
-    meta_total = 200_000
-    percentual_meta = min(1.0, valor_total_vendido / meta_total)
-    valor_restante = max(0, meta_total - valor_total_vendido)
-    
-    # Exibir meta mensal
-    st.subheader(f"META MENSAL PERÍODO: {inicio_meta.strftime('%d/%m/%Y')} A {fim_meta.strftime('%d/%m/%Y')}")
-    st.markdown("<hr style='border: 1px solid #3A3A52;'>", unsafe_allow_html=True)
-    
-    st.progress(percentual_meta, text=f"Progresso da Meta: {percentual_meta*100:.1f}%")
-    st.caption(f"Número de pedidos processados: {total_pedidos} | Pedidos únicos: {pedidos_unicos} | Duplicatas: {duplicatas}")
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Vendido (Z19-Z24)", f"R$ {valor_total_vendido:,.2f}")
-    col2.metric("Meta", f"R$ {meta_total:,.2f}")
-    col3.metric("Restante", f"R$ {valor_restante:,.2f}")
+   
     
     # Criar abas
     tab1, tab2, tab3 = st.tabs(["Desempenho Individual", "Análise de Clientes", "Cálculo de Meta"])
