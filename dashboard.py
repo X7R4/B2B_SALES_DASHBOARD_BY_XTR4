@@ -156,7 +156,7 @@ def download_and_process_file(service, file_info, progress_callback=None):
             st.error(f"Erro ao processar {file_name}: {e}")
             return pd.DataFrame()
     except Exception as e:
-        st.error(f"Erro ao baixar {file_name['name']}: {e}")
+        st.error(f"Erro ao baixar {file_info['name']}: {e}")
         return pd.DataFrame()
 
 # ===== FUNÇÕES DE PROCESSAMENTO (MANTIDAS) =====
@@ -166,14 +166,23 @@ def process_excel_data(df, file_name):
     pedidos = []
     
     try:
+        # Verificar se o DataFrame tem estrutura esperada
+        if df.empty or len(df) < 20 or len(df.columns) < 26:
+            st.warning(f"Estrutura inesperada no arquivo {file_name}. Pulando arquivo.")
+            return pd.DataFrame()
+        
         # Extrair data do pedido
-        data_pedido_raw = df.iloc[1, 15] if len(df) > 1 and len(df.columns) > 15 else None
+        data_pedido_raw = None
         try:
-            data_pedido = pd.to_datetime(data_pedido_raw, errors="coerce", dayfirst=True)
-            if pd.isna(data_pedido):
-                data_pedido = None
+            data_pedido_raw = df.iloc[1, 15] if len(df) > 1 and len(df.columns) > 15 else None
+            if pd.notna(data_pedido_raw):
+                data_pedido = pd.to_datetime(data_pedido_raw, errors="coerce", dayfirst=True)
+                if pd.isna(data_pedido):
+                    data_pedido = None
+                else:
+                    data_pedido = data_pedido.strftime("%Y-%m-%d")
             else:
-                data_pedido = data_pedido.strftime("%Y-%m-%d")
+                data_pedido = None
         except:
             data_pedido = None
         
@@ -181,9 +190,13 @@ def process_excel_data(df, file_name):
         valores_z19_z24 = []
         for i in range(18, 24):
             try:
-                valor = df.iloc[i, 25] if len(df) > i and len(df.columns) > 25 else 0
-                if pd.notna(valor):
-                    valores_z19_z24.append(float(valor))
+                if i < len(df) and 25 < len(df.columns):
+                    valor = df.iloc[i, 25]
+                    if pd.notna(valor):
+                        try:
+                            valores_z19_z24.append(float(valor))
+                        except:
+                            pass
             except:
                 pass
         
@@ -218,22 +231,28 @@ def process_excel_data(df, file_name):
         # Processar produtos e quantidades
         for i in range(18, 24):
             try:
-                quantidade = df.iloc[i, 0] if len(df) > i and len(df.columns) > 0 else 0
-                produto = df.iloc[i, 2] if len(df) > i and len(df.columns) > 2 else ""
-                
-                if pd.notna(quantidade) and pd.notna(produto) and float(quantidade) > 0:
-                    pedidos.append({
-                        "Número do Pedido": numero_pedido,
-                        "Data": data_pedido,
-                        "Cliente": cliente,
-                        "Valor Total Z19-Z24": valor_total_z,
-                        "Produto": str(produto),
-                        "Quantidade": float(quantidade),
-                        "Cidade": cidade,
-                        "Estado": estado,
-                        "Telefone": telefone,
-                        "Arquivo Origem": file_name
-                    })
+                if i < len(df) and 0 < len(df.columns) and 2 < len(df.columns):
+                    quantidade = df.iloc[i, 0]
+                    produto = df.iloc[i, 2]
+                    
+                    if pd.notna(quantidade) and pd.notna(produto):
+                        try:
+                            qtd = float(quantidade)
+                            if qtd > 0:
+                                pedidos.append({
+                                    "Número do Pedido": numero_pedido,
+                                    "Data": data_pedido,
+                                    "Cliente": cliente,
+                                    "Valor Total Z19-Z24": valor_total_z,
+                                    "Produto": str(produto),
+                                    "Quantidade": qtd,
+                                    "Cidade": cidade,
+                                    "Estado": estado,
+                                    "Telefone": telefone,
+                                    "Arquivo Origem": file_name
+                                })
+                        except:
+                            pass
             except:
                 continue
         
