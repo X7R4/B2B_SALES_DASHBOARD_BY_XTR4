@@ -149,8 +149,29 @@ def download_and_process_file(service, file_info, progress_callback=None):
             progress_callback(f"Processando {file_name}")
         
         try:
-            df = pd.read_excel(file_content, header=None)
+            # Tentar ler com diferentes abordagens
+            try:
+                df = pd.read_excel(file_content, header=None)
+            except:
+                # Se falhar, tentar com header=0
+                try:
+                    df = pd.read_excel(file_content, header=0)
+                except:
+                    # Se ainda falhar, tentar pular as primeiras linhas
+                    try:
+                        df = pd.read_excel(file_content, header=None, skiprows=5)
+                    except Exception as e:
+                        st.error(f"Não foi possível ler o arquivo {file_name}: {e}")
+                        return pd.DataFrame()
+            
             result = process_excel_data(df, file_name)
+            
+            # Adicionar log para depuração
+            if not result.empty:
+                st.write(f"Arquivo {file_name} processado com sucesso: {len(result)} registros")
+            else:
+                st.write(f"Arquivo {file_name} não retornou dados válidos")
+            
             return result
         except Exception as e:
             st.error(f"Erro ao processar {file_name}: {e}")
@@ -159,7 +180,7 @@ def download_and_process_file(service, file_info, progress_callback=None):
         st.error(f"Erro ao baixar {file_info['name']}: {e}")
         return pd.DataFrame()
 
-# ===== FUNÇÕES DE PROCESSAMENTO (MANTIDAS) =====
+# ===== FUNÇÕES DE PROCESSAMENTO =====
 
 def process_excel_data(df, file_name):
     """Processa os dados do Excel na mesma estrutura que a API usava"""
@@ -473,6 +494,8 @@ def process_files_in_parallel(service, files, max_workers=5, progress_callback=N
     """Processa múltiplos arquivos em paralelo"""
     all_data = []
     total_files = len(files)
+    successful_files = 0
+    failed_files = 0
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Criar um dicionário para mapear futuros aos arquivos
@@ -488,12 +511,22 @@ def process_files_in_parallel(service, files, max_workers=5, progress_callback=N
                 df_result = future.result()
                 if not df_result.empty:
                     all_data.append(df_result)
+                    successful_files += 1
+                else:
+                    failed_files += 1
                 
                 completed += 1
                 if progress_callback:
                     progress_callback(f"Concluído {completed}/{total_files}")
             except Exception as e:
                 st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
+                failed_files += 1
+    
+    # Exibir resumo do processamento
+    st.write(f"Resumo do processamento:")
+    st.write(f"- Total de arquivos: {total_files}")
+    st.write(f"- Arquivos processados com sucesso: {successful_files}")
+    st.write(f"- Arquivos sem dados válidos: {failed_files}")
     
     return all_data
 
