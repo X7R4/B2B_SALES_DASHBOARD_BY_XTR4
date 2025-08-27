@@ -28,6 +28,7 @@ import io
 
 # ===== INICIALIZAÇÃO DO SESSION STATE =====
 def init_session_state():
+    """Inicializa todas as variáveis necessárias do session_state"""
     if "error_messages" not in st.session_state:
         st.session_state.error_messages = []
     if "toast_messages" not in st.session_state:
@@ -37,7 +38,7 @@ def init_session_state():
     if "ultima_atualizacao" not in st.session_state:
         st.session_state.ultima_atualizacao = None
     if "ultima_verificacao" not in st.session_state:
-        st.session_state.ultima_verificacao = None
+        st.session_state.ultima_verificacao = dt.now()  # Inicializar com data atual
     if "arquivos_info" not in st.session_state:
         st.session_state.arquivos_info = []
     if "primeira_carga" not in st.session_state:
@@ -636,7 +637,7 @@ def carregar_dados_google_drive():
     if "df_dados" not in st.session_state:
         recarregar = True
         st.session_state.primeira_carga = True
-    elif "ultima_verificacao" in st.session_state:
+    elif "ultima_verificacao" in st.session_state and st.session_state.ultima_verificacao is not None:
         tempo_desde_ultima_verificacao = (dt.now() - st.session_state.ultima_verificacao).total_seconds()
         if tempo_desde_ultima_verificacao > 300:  # 5 minutos
             recarregar = True
@@ -711,7 +712,7 @@ def carregar_dados_google_drive():
 def auto_check_new_files():
     while not stop_event.is_set():
         try:
-            if "ultima_verificacao" in st.session_state:
+            if "ultima_verificacao" in st.session_state and st.session_state.ultima_verificacao is not None:
                 tempo_desde_ultima_verificacao = (dt.now() - st.session_state.ultima_verificacao).total_seconds()
                 if tempo_desde_ultima_verificacao >= 300:
                     processing_queue.put("check_new_files")
