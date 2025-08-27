@@ -16,9 +16,6 @@ from datetime import datetime as dt
 import time
 import json
 from workalendar.america import Brazil
-import concurrent.futures
-import threading
-from queue import Queue
 
 # Bibliotecas Google
 from google.oauth2 import service_account
@@ -38,15 +35,11 @@ def init_session_state():
     if "ultima_atualizacao" not in st.session_state:
         st.session_state.ultima_atualizacao = None
     if "ultima_verificacao" not in st.session_state:
-        st.session_state.ultima_verificacao = dt.now()  # Inicializar com data atual
+        st.session_state.ultima_verificacao = dt.now()
     if "arquivos_info" not in st.session_state:
         st.session_state.arquivos_info = []
     if "primeira_carga" not in st.session_state:
         st.session_state.primeira_carga = True
-    if "cache_data" not in st.session_state:
-        st.session_state.cache_data = {}
-    if "cache_timestamp" not in st.session_state:
-        st.session_state.cache_timestamp = {}
 
 # Chamar a função de inicialização imediatamente
 init_session_state()
@@ -58,19 +51,15 @@ SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 # Variável global para controle de sincronização
 last_sync_time = None
 
-# Fila para processamento em segundo plano
-processing_queue = Queue()
-stop_event = threading.Event()
-
 # Função segura para adicionar mensagens de erro
 def add_error_message(message):
     try:
         if hasattr(st, 'session_state') and hasattr(st.session_state, 'error_messages'):
             st.session_state.error_messages.append(message)
         else:
-            print(f"Erro (session_state não disponível): {message}")
+            print(f"Erro: {message}")
     except Exception as e:
-        print(f"Erro ao adicionar mensagem de erro: {e}")
+        print(f"Erro ao adicionar mensagem: {e}")
 
 # Função segura para adicionar mensagens de toast
 def add_toast_message(message):
@@ -78,31 +67,9 @@ def add_toast_message(message):
         if hasattr(st, 'session_state') and hasattr(st.session_state, 'toast_messages'):
             st.session_state.toast_messages.append(message)
         else:
-            print(f"Toast (session_state não disponível): {message}")
+            print(f"Toast: {message}")
     except Exception as e:
-        print(f"Erro ao adicionar mensagem de toast: {e}")
-
-# Função de cache alternativa
-def get_cached_data(key, ttl_seconds, func, *args, **kwargs):
-    """
-    Função de cache alternativa que funciona com session state
-    """
-    current_time = dt.now()
-    
-    # Verificar se o cache existe e ainda é válido
-    if key in st.session_state.cache_timestamp:
-        cache_age = (current_time - st.session_state.cache_timestamp[key]).total_seconds()
-        if cache_age < ttl_seconds:
-            return st.session_state.cache_data[key]
-    
-    # Se não existe ou expirou, calcular novo valor
-    result = func(*args, **kwargs)
-    
-    # Armazenar no cache
-    st.session_state.cache_data[key] = result
-    st.session_state.cache_timestamp[key] = current_time
-    
-    return result
+        print(f"Erro ao adicionar toast: {e}")
 
 def get_credentials():
     try:
@@ -184,14 +151,15 @@ def list_drive_files(service, folder_id):
         add_error_message(f"Erro ao listar arquivos: {e}")
         return []
 
-def download_and_process_file(service, file_info, progress_callback=None):
+def download_and_process_file(service, file_info):
+    """Processa um único arquivo"""
     try:
         file_id = file_info['id']
         file_name = file_info['name']
         
-        if progress_callback:
-            progress_callback(f"Baixando {file_name}")
+        st.write(f"Processando: {file_name}")
         
+        # Baixar arquivo
         request = service.files().get_media(fileId=file_id)
         file_content = io.BytesIO()
         downloader = MediaIoBaseDownload(file_content, request)
@@ -199,9 +167,7 @@ def download_and_process_file(service, file_info, progress_callback=None):
         while not done:
             status, done = downloader.next_chunk()
         
-        if progress_callback:
-            progress_callback(f"Processando {file_name}")
-        
+        # Processar arquivo
         try:
             try:
                 df = pd.read_excel(file_content, header=None)
@@ -218,9 +184,9 @@ def download_and_process_file(service, file_info, progress_callback=None):
             result = process_excel_data(df, file_name)
             
             if not result.empty:
-                print(f"Arquivo {file_name} processado com sucesso: {len(result)} registros")
+                st.success(f"✅ {file_name} processado: {len(result)} registros")
             else:
-                print(f"Arquivo {file_name} não retornou dados válidos")
+                st.warning(f"⚠️ {file_name} não retornou dados válidos")
             
             return result
         except Exception as e:
@@ -240,7 +206,7 @@ def process_excel_data(df, file_name):
             add_error_message(f"Estrutura inesperada no arquivo {file_name}. Pulando arquivo.")
             return pd.DataFrame()
         
-        data_pedido_raw = None
+        # Extrair data do pedido
         try:
             data_pedido_raw = df.iloc[1, 15] if len(df) > 1 and len(df.columns) > 15 else None
             if pd.notna(data_pedido_raw):
@@ -254,6 +220,7 @@ def process_excel_data(df, file_name):
         except:
             data_pedido = None
         
+        # Extrair valores Z19-Z24
         valores_z19_z24 = []
         for i in range(18, 24):
             try:
@@ -269,6 +236,7 @@ def process_excel_data(df, file_name):
         
         valor_total_z = sum(valores_z19_z24) if valores_z19_z24 else 0
         
+        # Extrair informações básicas
         try:
             numero_pedido = str(df.iloc[1, 8]) if len(df) > 1 and len(df.columns) > 8 else "Desconhecido"
         except:
@@ -294,6 +262,7 @@ def process_excel_data(df, file_name):
         except:
             estado = "Desconhecido"
         
+        # Processar produtos
         for i in range(18, 24):
             try:
                 if i < len(df) and 0 < len(df.columns) and 2 < len(df.columns):
@@ -501,10 +470,6 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
 # ===== FUNÇÃO DE REFRESH =====
 
 def refresh_drive_data():
-    # Limpar cache personalizado
-    st.session_state.cache_data = {}
-    st.session_state.cache_timestamp = {}
-    
     global last_sync_time
     last_sync_time = None
     
@@ -518,43 +483,6 @@ def refresh_drive_data():
         del st.session_state.arquivos_info
     
     st.rerun()
-
-def process_files_in_parallel(service, files, max_workers=5, progress_callback=None):
-    all_data = []
-    total_files = len(files)
-    successful_files = 0
-    failed_files = 0
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_file = {
-            executor.submit(download_and_process_file, service, file_info, progress_callback): file_info 
-            for file_info in files
-        }
-        
-        completed = 0
-        for future in concurrent.futures.as_completed(future_to_file):
-            file_info = future_to_file[future]
-            try:
-                df_result = future.result()
-                if not df_result.empty:
-                    all_data.append(df_result)
-                    successful_files += 1
-                else:
-                    failed_files += 1
-                
-                completed += 1
-                if progress_callback:
-                    progress_callback(f"Concluído {completed}/{total_files}")
-            except Exception as e:
-                add_error_message(f"Erro ao processar arquivo {file_info['name']}: {e}")
-                failed_files += 1
-    
-    print(f"Resumo do processamento:")
-    print(f"- Total de arquivos: {total_files}")
-    print(f"- Arquivos processados com sucesso: {successful_files}")
-    print(f"- Arquivos sem dados válidos: {failed_files}")
-    
-    return all_data
 
 def check_new_files():
     creds = authenticate_google_drive()
@@ -592,14 +520,12 @@ def check_new_files():
     
     add_toast_message(f"📁 {len(novos_arquivos)} novos arquivos encontrados na pasta 'pedidos'")
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    def progress_callback(message):
-        status_text.text(message)
-        progress_bar.progress(len(novos_arquivos) / len(novos_arquivos))
-    
-    all_data = process_files_in_parallel(service, novos_arquivos, max_workers=5, progress_callback=progress_callback)
+    # Processar arquivos sequencialmente
+    all_data = []
+    for file_info in novos_arquivos:
+        df_result = download_and_process_file(service, file_info)
+        if not df_result.empty:
+            all_data.append(df_result)
     
     if all_data:
         if "df_dados" in st.session_state:
@@ -629,7 +555,7 @@ def check_new_files():
 
 def carregar_dados_google_drive():
     """
-    Função para carregar dados do Google Drive com cache personalizado
+    Função para carregar dados do Google Drive processando um arquivo por vez
     """
     recarregar = False
     
@@ -674,16 +600,23 @@ def carregar_dados_google_drive():
             st.session_state.ultima_verificacao = dt.now()
             return st.session_state.df_dados
         
-        # Mostrar progresso
+        # Processar arquivos sequencialmente
+        st.write("🔄 Processando arquivos do Google Drive...")
         progress_bar = st.progress(0)
-        status_text = st.empty()
         
-        def progress_callback(message):
-            status_text.text(message)
-            progress_bar.progress(len(files) / len(files))
+        all_data = []
+        total_files = len(files)
         
-        # Processar arquivos em paralelo
-        all_data = process_files_in_parallel(service, files, max_workers=5, progress_callback=progress_callback)
+        for i, file_info in enumerate(files):
+            st.write(f"({i+1}/{total_files}) Processando: {file_info['name']}")
+            
+            df_result = download_and_process_file(service, file_info)
+            if not df_result.empty:
+                all_data.append(df_result)
+            
+            # Atualizar progresso
+            progress = (i + 1) / total_files
+            progress_bar.progress(progress)
         
         if all_data:
             # Combinar todos os dados
@@ -699,6 +632,7 @@ def carregar_dados_google_drive():
             st.session_state.ultima_verificacao = dt.now()
             st.session_state.primeira_carga = False
             
+            st.success(f"✅ Processamento concluído! {len(final_df)} pedidos no total")
             return final_df
         else:
             add_error_message("⚠️ Nenhum dado válido encontrado")
@@ -707,84 +641,7 @@ def carregar_dados_google_drive():
         # Retornar dados do cache
         return st.session_state.df_dados
 
-# ===== FUNÇÃO DE DETECÇÃO AUTOMÁTICA =====
-
-def auto_check_new_files():
-    while not stop_event.is_set():
-        try:
-            if "ultima_verificacao" in st.session_state and st.session_state.ultima_verificacao is not None:
-                tempo_desde_ultima_verificacao = (dt.now() - st.session_state.ultima_verificacao).total_seconds()
-                if tempo_desde_ultima_verificacao >= 300:
-                    processing_queue.put("check_new_files")
-            
-            time.sleep(60)
-        except Exception as e:
-            print(f"Erro na verificação automática: {e}")
-            time.sleep(60)
-
-def process_queue():
-    while not stop_event.is_set():
-        try:
-            task = processing_queue.get(timeout=1)
-            
-            if task == "check_new_files":
-                creds = authenticate_google_drive()
-                if creds:
-                    service = build('drive', 'v3', credentials=creds)
-                    files = list_drive_files(service, FOLDER_ID)
-                    
-                    if files:
-                        novos_arquivos = []
-                        arquivos_atuais = {f['id']: f['modifiedTime'] for f in files}
-                        
-                        if "arquivos_info" in st.session_state:
-                            arquivos_cache = {f['id']: f['modifiedTime'] for f in st.session_state.arquivos_info}
-                            
-                            for file_id, modified_time in arquivos_atuais.items():
-                                if file_id not in arquivos_cache or arquivos_cache[file_id] != modified_time:
-                                    for file_info in files:
-                                        if file_info['id'] == file_id:
-                                            novos_arquivos.append(file_info)
-                                            break
-                        else:
-                            novos_arquivos = files
-                        
-                        if novos_arquivos:
-                            all_data = process_files_in_parallel(service, novos_arquivos, max_workers=5)
-                            
-                            if all_data:
-                                if "df_dados" in st.session_state:
-                                    df_existente = st.session_state.df_dados
-                                    
-                                    arquivos_novos_nomes = [f['name'] for f in novos_arquivos]
-                                    df_filtrado = df_existente[~df_existente['Arquivo Origem'].isin(arquivos_novos_nomes)]
-                                    
-                                    df_novos = pd.concat(all_data, ignore_index=True)
-                                    final_df = pd.concat([df_filtrado, df_novos], ignore_index=True)
-                                else:
-                                    final_df = pd.concat(all_data, ignore_index=True)
-                                
-                                final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
-                                
-                                st.session_state.df_dados = final_df
-                                st.session_state.arquivos_info = files
-                                st.session_state.ultima_atualizacao = dt.now()
-                                st.session_state.ultima_verificacao = dt.now()
-                                st.session_state.primeira_carga = False
-                                
-                                add_toast_message(f"✅ {len(novos_arquivos)} novos arquivos processados automaticamente!")
-            
-            processing_queue.task_done()
-        except Exception as e:
-            print(f"Erro ao processar fila: {e}")
-
 # ===== CONFIGURAÇÃO INICIAL =====
-
-auto_check_thread = threading.Thread(target=auto_check_new_files, daemon=True)
-process_queue_thread = threading.Thread(target=process_queue, daemon=True)
-
-auto_check_thread.start()
-process_queue_thread.start()
 
 try:
     estados_df = pd.read_csv("estados.csv")
@@ -996,7 +853,7 @@ st.sidebar.title("📊 MENU DE SINCRONIZAÇÃO")
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
 st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE - PASTA 'PEDIDOS'")
 
-st.sidebar.markdown("### ⚙️ CONFIGURAÇÕES DE PROCESSAMENTO")
+st.sidebar.markdown("### ⚙️ CONFIGURAÇÕES")
 limitar_arquivos = st.sidebar.checkbox("Limitar número de arquivos", value=False)
 max_arquivos = 100
 
@@ -1009,20 +866,10 @@ if limitar_arquivos:
         step=50
     )
 
-st.sidebar.markdown("### ⚡ OTIMIZAÇÃO")
-processamento_paralelo = st.sidebar.checkbox("Processamento paralelo", value=True)
-num_workers = st.sidebar.number_input(
-    "Número de workers", 
-    min_value=1, 
-    max_value=10, 
-    value=5,
-    step=1
-)
-
 st.sidebar.markdown("### 🔄 DETECÇÃO AUTOMÁTICA")
 auto_detect = st.sidebar.checkbox("Verificar novos arquivos automaticamente", value=True)
 
-# Carregar dados usando a função sem cache do Streamlit
+# Carregar dados
 df = carregar_dados_google_drive()
 
 if not df.empty:
@@ -1658,5 +1505,3 @@ else:
     st.warning("⚠️ Nenhum dado disponível. Verifique a configuração do Google Drive.")
 
 st.markdown('<div class="creditos">developed by @joao_vendascastor</div>', unsafe_allow_html=True)
-
-stop_event.set()
