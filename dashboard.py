@@ -94,16 +94,29 @@ def authenticate_google_drive():
         return None
 
 def list_drive_files(service, folder_id):
-    """Lista todos os arquivos Excel de uma pasta no Google Drive"""
+    """Lista todos os arquivos Excel de uma pasta no Google Drive com paginação"""
     try:
         query = f"parents in '{folder_id}' and mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
-        results = service.files().list(
-            q=query, 
-            spaces='drive', 
-            fields='files(id, name, modifiedTime, size)',
-            orderBy="modifiedTime desc"
-        ).execute()
-        return results.get('files', [])
+        page_token = None
+        all_files = []
+        
+        while True:
+            results = service.files().list(
+                q=query, 
+                spaces='drive', 
+                fields='nextPageToken, files(id, name, modifiedTime, size)',
+                orderBy="modifiedTime desc",
+                pageToken=page_token
+            ).execute()
+            
+            files = results.get('files', [])
+            all_files.extend(files)
+            
+            page_token = results.get('nextPageToken', None)
+            if not page_token:
+                break
+                
+        return all_files
     except Exception as e:
         st.error(f"Erro ao listar arquivos: {e}")
         return []
@@ -826,6 +839,20 @@ st.sidebar.title("📊 MENU DE SINCRONIZAÇÃO")
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
 st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE - PASTA 'PEDIDOS'")
 
+# Adicionar controle para limitar o número de arquivos processados
+st.sidebar.markdown("### ⚙️ CONFIGURAÇÕES DE PROCESSAMENTO")
+limitar_arquivos = st.sidebar.checkbox("Limitar número de arquivos", value=False)
+max_arquivos = 100
+
+if limitar_arquivos:
+    max_arquivos = st.sidebar.number_input(
+        "Máximo de arquivos para processar", 
+        min_value=10, 
+        max_value=5000, 
+        value=100,
+        step=50
+    )
+
 # Carregar dados
 df = carregar_dados_google_drive()
 
@@ -1485,22 +1512,6 @@ if not df.empty:
         st.markdown(f'<div class="ganhos-valor">R$ {ganhos_totais:,.2f}</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
         
-        with st.expander("Regras de Cálculo"):
-            st.markdown("""
-            ### Percentuais de Comissão:
-            - **KIT AR**: 0.7% (calculado para qualquer valor de vendas)
-            - **Peças Avulsas e Kit Rosca**: 0.5% (calculado para qualquer valor de vendas)
-            
-            ### Bônus:
-            - **Bônus por Volume**: R$ 200,00 a cada R$ 50.000,00 vendido
-            - **Prêmio Meta Mensal**: R$ 600,00 (se meta de R$ 200.000,00 for atingida)
-            
-            ### Cálculo dos Novos Campos:
-            - **Quanto deveria estar**: Valor esperado com base no progresso dos dias úteis
-            - **Dias Úteis Faltantes**: Contagem de dias úteis restantes (excluindo sábados e domingos)
-            - **Quanto deve vender por dia**: Valor necessário para atingir a meta nos dias úteis restantes
-            """)
-
 else:
     st.warning("⚠️ Nenhum dado disponível. Verifique a configuração do Google Drive.")
 
