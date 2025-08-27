@@ -26,6 +26,27 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 
+# ===== INICIALIZAÇÃO DO SESSION STATE =====
+# Inicializar session_state ANTES de qualquer outra operação
+def init_session_state():
+    if "error_messages" not in st.session_state:
+        st.session_state.error_messages = []
+    if "toast_messages" not in st.session_state:
+        st.session_state.toast_messages = []
+    if "df_dados" not in st.session_state:
+        st.session_state.df_dados = pd.DataFrame()
+    if "ultima_atualizacao" not in st.session_state:
+        st.session_state.ultima_atualizacao = None
+    if "ultima_verificacao" not in st.session_state:
+        st.session_state.ultima_verificacao = None
+    if "arquivos_info" not in st.session_state:
+        st.session_state.arquivos_info = []
+    if "primeira_carga" not in st.session_state:
+        st.session_state.primeira_carga = True
+
+# Chamar a função de inicialização imediatamente
+init_session_state()
+
 # ===== CONFIGURAÇÃO =====
 FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
@@ -37,11 +58,25 @@ last_sync_time = None
 processing_queue = Queue()
 stop_event = threading.Event()
 
-# Inicializar session_state para mensagens
-if "toast_messages" not in st.session_state:
-    st.session_state.toast_messages = []
-if "error_messages" not in st.session_state:
-    st.session_state.error_messages = []
+# Função segura para adicionar mensagens de erro
+def add_error_message(message):
+    try:
+        if hasattr(st, 'session_state') and hasattr(st.session_state, 'error_messages'):
+            st.session_state.error_messages.append(message)
+        else:
+            print(f"Erro (session_state não disponível): {message}")
+    except Exception as e:
+        print(f"Erro ao adicionar mensagem de erro: {e}")
+
+# Função segura para adicionar mensagens de toast
+def add_toast_message(message):
+    try:
+        if hasattr(st, 'session_state') and hasattr(st.session_state, 'toast_messages'):
+            st.session_state.toast_messages.append(message)
+        else:
+            print(f"Toast (session_state não disponível): {message}")
+    except Exception as e:
+        print(f"Erro ao adicionar mensagem de toast: {e}")
 
 def get_credentials():
     try:
@@ -63,7 +98,7 @@ def get_credentials():
         )
         return credentials
     except Exception as e:
-        st.session_state.error_messages.append(f"Erro ao carregar credenciais: {e}")
+        add_error_message(f"Erro ao carregar credenciais: {e}")
         return None
 
 def authenticate_google_drive():
@@ -93,7 +128,7 @@ def authenticate_google_drive():
         last_sync_time = dt.now()
         return creds
     except Exception as e:
-        st.session_state.error_messages.append(f"Erro ao carregar credenciais: {e}")
+        add_error_message(f"Erro ao carregar credenciais: {e}")
         return None
 
 def list_drive_files(service, folder_id):
@@ -120,7 +155,7 @@ def list_drive_files(service, folder_id):
                 
         return all_files
     except Exception as e:
-        st.session_state.error_messages.append(f"Erro ao listar arquivos: {e}")
+        add_error_message(f"Erro ao listar arquivos: {e}")
         return []
 
 def download_and_process_file(service, file_info, progress_callback=None):
@@ -151,7 +186,7 @@ def download_and_process_file(service, file_info, progress_callback=None):
                     try:
                         df = pd.read_excel(file_content, header=None, skiprows=5)
                     except Exception as e:
-                        st.session_state.error_messages.append(f"Não foi possível ler o arquivo {file_name}: {e}")
+                        add_error_message(f"Não foi possível ler o arquivo {file_name}: {e}")
                         return pd.DataFrame()
             
             result = process_excel_data(df, file_name)
@@ -163,10 +198,10 @@ def download_and_process_file(service, file_info, progress_callback=None):
             
             return result
         except Exception as e:
-            st.session_state.error_messages.append(f"Erro ao processar {file_name}: {e}")
+            add_error_message(f"Erro ao processar {file_name}: {e}")
             return pd.DataFrame()
     except Exception as e:
-        st.session_state.error_messages.append(f"Erro ao baixar {file_info['name']}: {e}")
+        add_error_message(f"Erro ao baixar {file_info['name']}: {e}")
         return pd.DataFrame()
 
 # ===== FUNÇÕES DE PROCESSAMENTO =====
@@ -176,7 +211,7 @@ def process_excel_data(df, file_name):
     
     try:
         if df.empty or len(df) < 20 or len(df.columns) < 26:
-            st.session_state.error_messages.append(f"Estrutura inesperada no arquivo {file_name}. Pulando arquivo.")
+            add_error_message(f"Estrutura inesperada no arquivo {file_name}. Pulando arquivo.")
             return pd.DataFrame()
         
         data_pedido_raw = None
@@ -261,7 +296,7 @@ def process_excel_data(df, file_name):
                 continue
         
     except Exception as e:
-        st.session_state.error_messages.append(f"Erro ao processar arquivo {file_name}: {e}")
+        add_error_message(f"Erro ao processar arquivo {file_name}: {e}")
     
     return pd.DataFrame(pedidos)
 
@@ -483,7 +518,7 @@ def process_files_in_parallel(service, files, max_workers=5, progress_callback=N
                 if progress_callback:
                     progress_callback(f"Concluído {completed}/{total_files}")
             except Exception as e:
-                st.session_state.error_messages.append(f"Erro ao processar arquivo {file_info['name']}: {e}")
+                add_error_message(f"Erro ao processar arquivo {file_info['name']}: {e}")
                 failed_files += 1
     
     print(f"Resumo do processamento:")
@@ -496,7 +531,7 @@ def process_files_in_parallel(service, files, max_workers=5, progress_callback=N
 def check_new_files():
     creds = authenticate_google_drive()
     if not creds:
-        st.session_state.error_messages.append("❌ Não foi possível autenticar com o Google Drive")
+        add_error_message("❌ Não foi possível autenticar com o Google Drive")
         return
     
     service = build('drive', 'v3', credentials=creds)
@@ -504,7 +539,7 @@ def check_new_files():
     files = list_drive_files(service, FOLDER_ID)
     
     if not files:
-        st.session_state.error_messages.append("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
+        add_error_message("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
         return
     
     novos_arquivos = []
@@ -523,11 +558,11 @@ def check_new_files():
         novos_arquivos = files
     
     if not novos_arquivos:
-        st.session_state.toast_messages.append("✅ Nenhum novo arquivo encontrado na pasta 'pedidos'")
+        add_toast_message("✅ Nenhum novo arquivo encontrado na pasta 'pedidos'")
         st.session_state.ultima_verificacao = dt.now()
         return
     
-    st.session_state.toast_messages.append(f"📁 {len(novos_arquivos)} novos arquivos encontrados na pasta 'pedidos'")
+    add_toast_message(f"📁 {len(novos_arquivos)} novos arquivos encontrados na pasta 'pedidos'")
     
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -552,7 +587,7 @@ def check_new_files():
         
         final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
         
-        st.session_state.toast_messages.append(f"✅ {len(novos_arquivos)} arquivos atualizados! {len(final_df)} pedidos no total")
+        add_toast_message(f"✅ {len(novos_arquivos)} arquivos atualizados! {len(final_df)} pedidos no total")
         
         st.session_state.df_dados = final_df
         st.session_state.arquivos_info = files
@@ -560,7 +595,7 @@ def check_new_files():
         st.session_state.ultima_verificacao = dt.now()
         st.session_state.primeira_carga = False
     else:
-        st.session_state.error_messages.append("⚠️ Nenhum dado válido encontrado nos novos arquivos")
+        add_error_message("⚠️ Nenhum dado válido encontrado nos novos arquivos")
 
 # ===== FUNÇÃO PRINCIPAL DE CARREGAMENTO =====
 
@@ -581,7 +616,7 @@ def carregar_dados_google_drive():
     if recarregar:
         creds = authenticate_google_drive()
         if not creds:
-            st.session_state.error_messages.append("❌ Não foi possível autenticar com o Google Drive")
+            add_error_message("❌ Não foi possível autenticar com o Google Drive")
             return pd.DataFrame()
         
         service = build('drive', 'v3', credentials=creds)
@@ -589,7 +624,7 @@ def carregar_dados_google_drive():
         files = list_drive_files(service, FOLDER_ID)
         
         if not files:
-            st.session_state.error_messages.append("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
+            add_error_message("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
             return pd.DataFrame()
         
         novos_arquivos = False
@@ -627,7 +662,7 @@ def carregar_dados_google_drive():
             
             return final_df
         else:
-            st.session_state.error_messages.append("⚠️ Nenhum dado válido encontrado")
+            add_error_message("⚠️ Nenhum dado válido encontrado")
             return pd.DataFrame()
     else:
         return st.session_state.df_dados
@@ -697,7 +732,7 @@ def process_queue():
                                 st.session_state.ultima_verificacao = dt.now()
                                 st.session_state.primeira_carga = False
                                 
-                                st.session_state.toast_messages.append(f"✅ {len(novos_arquivos)} novos arquivos processados automaticamente!")
+                                add_toast_message(f"✅ {len(novos_arquivos)} novos arquivos processados automaticamente!")
             
             processing_queue.task_done()
         except Exception as e:
@@ -720,7 +755,7 @@ try:
     
     estados_df["uf_normalizado"] = estados_df["uf"].apply(normalize_text)
 except Exception as e:
-    st.session_state.error_messages.append(f"Erro ao carregar arquivos de referência: {e}")
+    add_error_message(f"Erro ao carregar arquivos de referência: {e}")
     st.stop()
 
 st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
