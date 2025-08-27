@@ -27,6 +27,9 @@ import io
 FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # ALTERE ESTE VALOR!
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
+# Variável global para controle de sincronização
+last_sync_time = None
+
 # Função para obter credenciais dos segredos
 def get_credentials():
     try:
@@ -55,7 +58,40 @@ def get_credentials():
 
 # Atualizar a função de autenticação
 def authenticate_google_drive():
-    return get_credentials()
+    """Autentica com o Google Drive usando Service Account"""
+    global last_sync_time
+    
+    try:
+        # Verificar se já sincronizou recentemente (menos de 1 minuto)
+        if last_sync_time and (dt.now() - last_sync_time).total_seconds() < 60:
+            st.info("Sincronização recente detectada. Aguarde um momento...")
+            return None
+            
+        credentials_info = {
+            "type": st.secrets["gcp_service_account"]["type"],
+            "project_id": st.secrets["gcp_service_account"]["project_id"],
+            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+            "private_key": st.secrets["gcp_service_account"]["private_key"],
+            "client_email": st.secrets["gcp_service_account"]["client_email"],
+            "client_id": st.secrets["gcp_service_account"]["client_id"],
+            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
+        }
+        
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_info, scopes=SCOPES
+        )
+        
+        # Atualizar tempo da última sincronização
+        last_sync_time = dt.now()
+        
+        return creds
+    except Exception as e:
+        st.error(f"Erro ao carregar credenciais: {e}")
+        return None
+
 def list_drive_files(service, folder_id):
     """Lista todos os arquivos Excel de uma pasta no Google Drive"""
     try:
@@ -359,8 +395,33 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     
     return tabela
 
+# ===== FUNÇÃO DE REFRESH =====
+
+def refresh_drive_data():
+    """Força a atualização dos dados do Google Drive"""
+    # Limpar o cache
+    st.cache_data.clear()
+    
+    # Forçar nova autenticação
+    global last_sync_time
+    last_sync_time = None
+    
+    # Limpar session state
+    if "df_dados" in st.session_state:
+        del st.session_state.df_dados
+    if "ultima_atualizacao" in st.session_state:
+        del st.session_state.ultima_atualizacao
+    if "ultima_verificacao" in st.session_state:
+        del st.session_state.ultima_verificacao
+    if "arquivos_info" in st.session_state:
+        del st.session_state.arquivos_info
+    
+    # Recarregar a página
+    st.rerun()
+
 # ===== FUNÇÃO PRINCIPAL DE CARREGAMENTO =====
 
+@st.cache_data(ttl=300)
 def carregar_dados_google_drive():
     """Carrega dados do Google Drive com cache e verificação automática de novos arquivos"""
     # Verificar se precisamos recarregar (a cada 5 minutos ou quando solicitado)
@@ -531,12 +592,42 @@ st.markdown("""
             margin-bottom: 20px;
             box-shadow: 0 2px 6px rgba(0,0,0,0.3);
         }
+        .sync-button {
+            background: linear-gradient(90deg, #4A90E2, #50E3C2);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 24px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            text-align: center;
+            margin: 20px 0;
+        }
+        .sync-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+        }
     </style>
 """, unsafe_allow_html=True)
 
+# ===== TÍTULO E BOTÃO DE SINCRONIZAÇÃO =====
+
+st.title("📊 DASHBOARD DE VENDAS")
+
+# Botão de ressincronização proeminente
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    if st.button("🔄 RESSINCRONIZAR COM GOOGLE DRIVE", type="primary"):
+        with st.spinner("Ressincronizando com o Google Drive..."):
+            refresh_drive_data()
+            st.success("✅ Ressincronização concluída com sucesso!")
+
 # ===== SIDEBAR =====
 
-st.sidebar.title("📊 Dashboard de Vendas")
+st.sidebar.title("📊 Menu de Navegação")
 
 # Status da sincronização com Google Drive
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
@@ -557,16 +648,9 @@ else:
 
 st.sidebar.markdown('</div>', unsafe_allow_html=True)
 
-# Botão para recarregar dados
+# Botão para recarregar dados no sidebar
 if st.sidebar.button("🔄 Recarregar Dados"):
-    # Limpar cache
-    if "df_dados" in st.session_state:
-        del st.session_state.df_dados
-    if "ultima_atualizacao" in st.session_state:
-        del st.session_state.ultima_atualizacao
-    if "ultima_verificacao" in st.session_state:
-        del st.session_state.ultima_verificacao
-    st.experimental_rerun()
+    refresh_drive_data()
 
 # Separador visual
 st.sidebar.markdown("---")
@@ -704,7 +788,7 @@ if not df.empty:
             vendas_dia = df_desempenho_local.groupby(df_desempenho_local["Data"].dt.date)["Valor Total Z19-Z24"].sum().reset_index()
             fig_dia = px.bar(vendas_dia, x="Data", y="Valor Total Z19-Z24", template="plotly_dark", color_discrete_sequence=["#4A90E2"])
             fig_dia.update_layout(xaxis_title="Data", yaxis_title="Valor Total (R$)", font=dict(size=10), margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_dia, use_container_width=True)
+            st.plotly_chart(fig_dia, width="stretch")
             
             # Comparação de Vendas: Ano Atual vs Ano Anterior
             inicio_atual = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
@@ -734,7 +818,7 @@ if not df.empty:
                 margin=dict(l=10, r=10, t=30, b=10),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
-            st.plotly_chart(fig_comparacao_ano, use_container_width=True)
+            st.plotly_chart(fig_comparacao_ano, width="stretch")
             
             # Comparação de Vendas: Mês Atual vs Mês Anterior
             if mes > 1:
@@ -757,7 +841,7 @@ if not df.empty:
                     margin=dict(l=10, r=10, t=30, b=10),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
-                st.plotly_chart(fig_comparacao_mes, use_container_width=True)
+                st.plotly_chart(fig_comparacao_mes, width="stretch")
         
         # Segundo bloco de gráficos
         col_d2_full, = st.columns([4])
@@ -779,7 +863,7 @@ if not df.empty:
                 margin=dict(l=10, r=10, t=30, b=10),
                 xaxis_tickangle=-45
             )
-            st.plotly_chart(fig_top_produtos, use_container_width=True)
+            st.plotly_chart(fig_top_produtos, width="stretch")
             
             # Vendas por Categoria
             df_desempenho_local["Categoria"] = df_desempenho_local["Produto"].apply(classificar_produto)
@@ -797,7 +881,7 @@ if not df.empty:
                 margin=dict(l=10, r=10, t=30, b=10),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
-            st.plotly_chart(fig_categoria, use_container_width=True)
+            st.plotly_chart(fig_categoria, width="stretch")
             
             # Botão para mostrar tabela de pedidos
             if st.button("Mostrar Tabela de Pedidos da Meta Atual"):
@@ -806,7 +890,7 @@ if not df.empty:
                     st.subheader(f"Tabela de Pedidos da Meta Atual ({inicio_meta.strftime('%d/%m/%Y')} a {fim_meta.strftime('%d/%m/%Y')})")
                     
                     verificar_duplicatas(tabela_pedidos)
-                    st.dataframe(tabela_pedidos.style.format({'Valor do Pedido': 'R$ {:,.2f}'}), use_container_width=True)
+                    st.dataframe(tabela_pedidos.style.format({'Valor do Pedido': 'R$ {:,.2f}'}), width="stretch")
                     
                     total_unico = tabela_pedidos['Valor do Pedido'].sum()
                     st.caption(f"Valor total de pedidos únicos: R$ {total_unico:,.2f}")
@@ -897,10 +981,10 @@ if not df.empty:
                         title="Localização dos Clientes",
                         height=600
                     )
-                    st.plotly_chart(fig_mapa, use_container_width=True, config={'scrollZoom': True})
+                    st.plotly_chart(fig_mapa, width="stretch", config={'scrollZoom': True})
                     
                     df_tabela = df_mapa[["Cliente", "Telefone", "Cidade", "Estado", "Cidade_Corrigida", "Estado_Corrigido", "Coordenadas Atuais"]].copy()
-                    st.data_editor(df_tabela, use_container_width=True)
+                    st.data_editor(df_tabela, width="stretch")
                     
                     if st.button("Exportar dados dos clientes"):
                         csv = df_tabela.to_csv(index=False).encode('utf-8')
@@ -977,11 +1061,11 @@ if not df.empty:
                             title="Lojistas a Recuperar",
                             height=600
                         )
-                        st.plotly_chart(fig_recuperar, use_container_width=True, config={'scrollZoom': True})
+                        st.plotly_chart(fig_recuperar, width="stretch", config={'scrollZoom': True})
                         
                         df_recuperar_tabela = df_recuperar_mapa[["Cliente", "Telefone", "Cidade", "Estado", "Ultima_Compra", "meses_sem_comprar"]].copy()
                         df_recuperar_tabela.columns = ["Cliente", "Telefone", "Cidade", "Estado", "Última Compra", "Meses sem Comprar"]
-                        st.data_editor(df_recuperar_tabela, use_container_width=True)
+                        st.data_editor(df_recuperar_tabela, width="stretch")
                         
                         if st.button("Exportar dados de lojistas a recuperar"):
                             csv = df_recuperar_tabela.to_csv(index=False).encode('utf-8')
@@ -1026,7 +1110,7 @@ if not df.empty:
                 height=400,
                 autosize=True
             )
-            st.plotly_chart(fig_regiao, use_container_width=True)
+            st.plotly_chart(fig_regiao, width="stretch")
         
         with col_pie2:
             clientes_estado = df_mapa['Estado_Corrigido'].value_counts().reset_index()
@@ -1044,7 +1128,7 @@ if not df.empty:
                 height=400,
                 autosize=True
             )
-            st.plotly_chart(fig_estado, use_container_width=True)
+            st.plotly_chart(fig_estado, width="stretch")
         
         # Gráfico de barras
         st.subheader("Análise de Lojistas por Valor Total de Compras")
@@ -1082,11 +1166,11 @@ if not df.empty:
         
         fig_lojistas.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
         
-        st.plotly_chart(fig_lojistas, use_container_width=True)
+        st.plotly_chart(fig_lojistas, width="stretch")
         
         # Tabela
         st.subheader("Dados Detalhados dos Lojistas")
-        st.dataframe(top_lojistas.style.format({'Valor Total Z19-Z24': 'R$ {:,.2f}'}), use_container_width=True)
+        st.dataframe(top_lojistas.style.format({'Valor Total Z19-Z24': 'R$ {:,.2f}'}), width="stretch")
     
     with tab3:
         # Cálculo de Meta
@@ -1099,7 +1183,7 @@ if not df.empty:
         col_info2.metric("Meta Mensal Atingida", "Sim" if meta_atingida else "Não")
         
         st.subheader("Detalhamento dos Cálculos")
-        st.dataframe(resultados.style.format({'Valor (R$)': 'R$ {:,.2f}'}), use_container_width=True)
+        st.dataframe(resultados.style.format({'Valor (R$)': 'R$ {:,.2f}'}), width="stretch")
         
         st.markdown('<div class="ganhos-destaque">', unsafe_allow_html=True)
         st.markdown("### Ganhos Estimados")
