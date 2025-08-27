@@ -15,21 +15,21 @@ import sys
 from datetime import datetime as dt
 import time
 import json
-
+ 
 # Bibliotecas Google
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
-
+ 
 # ===== CONFIGURAÇÃO =====
 # Substitua pelo ID da sua pasta no Google Drive
 FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # ALTERE ESTE VALOR!
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-
+ 
 # Variável global para controle de sincronização
 last_sync_time = None
-
+ 
 # Função para obter credenciais dos segredos
 def get_credentials():
     try:
@@ -55,7 +55,7 @@ def get_credentials():
     except Exception as e:
         st.error(f"Erro ao carregar credenciais: {e}")
         return None
-
+ 
 # Atualizar a função de autenticação
 def authenticate_google_drive():
     """Autentica com o Google Drive usando Service Account"""
@@ -91,7 +91,7 @@ def authenticate_google_drive():
     except Exception as e:
         st.error(f"Erro ao carregar credenciais: {e}")
         return None
-
+ 
 def list_drive_files(service, folder_id):
     """Lista todos os arquivos Excel de uma pasta no Google Drive"""
     try:
@@ -106,7 +106,7 @@ def list_drive_files(service, folder_id):
     except Exception as e:
         st.error(f"Erro ao listar arquivos: {e}")
         return []
-
+ 
 def download_drive_file(service, file_id, file_name):
     """Baixa um arquivo do Google Drive e retorna como DataFrame"""
     try:
@@ -127,9 +127,9 @@ def download_drive_file(service, file_id, file_name):
     except Exception as e:
         st.error(f"Erro ao baixar {file_name}: {e}")
         return pd.DataFrame()
-
+ 
 # ===== FUNÇÕES DE PROCESSAMENTO (MANTIDAS) =====
-
+ 
 def process_excel_data(df, file_name):
     """Processa os dados do Excel na mesma estrutura que a API usava"""
     pedidos = []
@@ -210,7 +210,7 @@ def process_excel_data(df, file_name):
         st.error(f"Erro ao processar arquivo {file_name}: {e}")
     
     return pd.DataFrame(pedidos)
-
+ 
 def verificar_duplicatas(df):
     """Verifica e relata duplicatas no DataFrame"""
     duplicatas = df[df.duplicated(subset=['Número do Pedido'], keep=False)]
@@ -227,7 +227,7 @@ def verificar_duplicatas(df):
         st.success("✅ Nenhuma duplicata encontrada!")
         st.caption(f"Total de pedidos: {len(df)} | Todos são únicos")
         return False
-
+ 
 def limpar_duplicatas(df):
     """Remove duplicatas do DataFrame"""
     df_limpo = df.drop_duplicates(subset=['Número do Pedido', 'Data'])
@@ -236,14 +236,14 @@ def limpar_duplicatas(df):
     st.caption(f"Registros antes: {len(df)} | Registros depois: {len(df_limpo)}")
     
     return df_limpo
-
+ 
 def normalize_text(text):
     """Normaliza texto (remover acentos e converter para maiúsculas)"""
     if pd.isna(text):
         return ""
     text = ''.join(c for c in unicodedata.normalize('NFD', str(text)) if unicodedata.category(c) != 'Mn')
     return text.strip().upper()
-
+ 
 def find_closest_city_with_state(city, state, city_list, municipios_df, estados_df, threshold=70):
     """Encontra a cidade mais próxima com fuzzy matching considerando o estado"""
     if not city or city == "DESCONHECIDO":
@@ -280,14 +280,14 @@ def find_closest_city_with_state(city, state, city_list, municipios_df, estados_
             return matched_city, city_info.iloc[0]['latitude'], city_info.iloc[0]['longitude']
     
     return None, None, None
-
+ 
 def get_estado_codigo(estado_normalizado, estados_df):
     """Obtém o código do estado a partir da sigla normalizada"""
     estado_info = estados_df[estados_df['uf_normalizado'] == estado_normalizado]
     if not estado_info.empty:
         return estado_info.iloc[0]['codigo_uf']
     return None
-
+ 
 def get_week(data, start_date, end_date):
     """Determina a semana do mês com base no intervalo de 26 a 25"""
     total_days = (end_date - start_date).days + 1
@@ -296,7 +296,7 @@ def get_week(data, start_date, end_date):
     days_since_start = (data - start_date).days
     week = ((days_since_start * 4) // total_days) + 1 if days_since_start >= 0 else 0
     return min(max(week, 1), 4)
-
+ 
 def classificar_produto(descricao):
     """Classifica produtos nas categorias especificadas"""
     kits_ar = ["KIT 1", "KIT 2", "KIT 3", "KIT 4", "KIT 5", "KIT 6", "KIT 7", 
@@ -308,7 +308,7 @@ def classificar_produto(descricao):
         return "KITS ROSCA"
     else:
         return "PEÇAS AVULSAS"
-
+ 
 def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
     """Calcula comissões e bônus com base nas vendas do período"""
     df_periodo = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
@@ -354,7 +354,7 @@ def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
     })
     
     return resultados, valor_total_vendido, meta_atingida
-
+ 
 def identificar_lojistas_recuperar(df):
     """Identifica lojistas a recuperar"""
     pedidos_por_cliente = df.groupby('Cliente').size().reset_index(name='num_pedidos')
@@ -379,7 +379,7 @@ def identificar_lojistas_recuperar(df):
         return lojistas_recuperar
     
     return pd.DataFrame()
-
+ 
 def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     """Gera tabela de pedidos para o período da meta especificado"""
     df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
@@ -394,11 +394,11 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     tabela = tabela.sort_values("Data do Pedido")
     
     return tabela
-
+ 
 # ===== FUNÇÃO DE REFRESH =====
-
+ 
 def refresh_drive_data():
-    """Força a atualização dos dados do Google Drive"""
+    """Força a atualização completa dos dados do Google Drive"""
     # Limpar o cache
     st.cache_data.clear()
     
@@ -418,9 +418,100 @@ def refresh_drive_data():
     
     # Recarregar a página
     st.rerun()
-
+ 
+def check_new_files():
+    """Verifica e processa apenas arquivos novos no Google Drive"""
+    # Autenticar
+    creds = authenticate_google_drive()
+    if not creds:
+        st.error("❌ Não foi possível autenticar com o Google Drive")
+        return
+    
+    service = build('drive', 'v3', credentials=creds)
+    
+    # Listar arquivos atuais
+    files = list_drive_files(service, FOLDER_ID)
+    
+    if not files:
+        st.warning("⚠️ Nenhum arquivo encontrado na pasta do Google Drive")
+        return
+    
+    # Verificar se há arquivos novos ou modificados
+    novos_arquivos = []
+    arquivos_atuais = {f['id']: f['modifiedTime'] for f in files}
+    
+    if "arquivos_info" in st.session_state:
+        arquivos_cache = {f['id']: f['modifiedTime'] for f in st.session_state.arquivos_info}
+        
+        for file_id, modified_time in arquivos_atuais.items():
+            if file_id not in arquivos_cache or arquivos_cache[file_id] != modified_time:
+                # Encontrar o arquivo completo
+                for file_info in files:
+                    if file_info['id'] == file_id:
+                        novos_arquivos.append(file_info)
+                        break
+    else:
+        # Primeira carga - processar todos os arquivos
+        novos_arquivos = files
+    
+    if not novos_arquivos:
+        st.success("✅ Nenhum novo arquivo encontrado")
+        st.session_state.ultima_verificacao = dt.now()
+        return
+    
+    # Mostrar progresso
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    all_data = []
+    total_files = len(novos_arquivos)
+    
+    for i, file_info in enumerate(novos_arquivos):
+        status_text.text(f"Processando {i+1}/{total_files}: {file_info['name']}")
+        
+        # Baixar e processar arquivo
+        df_file = download_drive_file(service, file_info['id'], file_info['name'])
+        
+        if not df_file.empty:
+            all_data.append(df_file)
+        
+        # Atualizar progresso
+        progress_bar.progress((i + 1) / total_files)
+    
+    # Se temos dados novos, atualizar o DataFrame
+    if all_data:
+        # Combinar dados novos com os existentes
+        if "df_dados" in st.session_state:
+            df_existente = st.session_state.df_dados
+            
+            # Remover pedidos que possam estar nos arquivos novos
+            # (para evitar duplicatas caso um arquivo tenha sido atualizado)
+            arquivos_novos_nomes = [f['name'] for f in novos_arquivos]
+            df_filtrado = df_existente[~df_existente['Arquivo Origem'].isin(arquivos_novos_nomes)]
+            
+            # Combinar com os novos dados
+            df_novos = pd.concat(all_data, ignore_index=True)
+            final_df = pd.concat([df_filtrado, df_novos], ignore_index=True)
+        else:
+            # Primeira carga
+            final_df = pd.concat(all_data, ignore_index=True)
+        
+        # Remover duplicatas
+        final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
+        
+        st.success(f"✅ {len(novos_arquivos)} arquivos atualizados! {len(final_df)} pedidos no total")
+        
+        # Salvar em cache
+        st.session_state.df_dados = final_df
+        st.session_state.arquivos_info = files
+        st.session_state.ultima_atualizacao = dt.now()
+        st.session_state.ultima_verificacao = dt.now()
+        st.session_state.primeira_carga = False
+    else:
+        st.warning("⚠️ Nenhum dado válido encontrado nos novos arquivos")
+ 
 # ===== FUNÇÃO PRINCIPAL DE CARREGAMENTO =====
-
+ 
 @st.cache_data(ttl=300)
 def carregar_dados_google_drive():
     """Carrega dados do Google Drive com cache e verificação automática de novos arquivos"""
@@ -515,9 +606,9 @@ def carregar_dados_google_drive():
     else:
         # Retornar dados do cache
         return st.session_state.df_dados
-
+ 
 # ===== CONFIGURAÇÃO INICIAL =====
-
+ 
 # Carregar arquivos de estados e municípios
 try:
     estados_df = pd.read_csv("estados.csv")
@@ -532,10 +623,10 @@ try:
 except Exception as e:
     st.error(f"Erro ao carregar arquivos de referência: {e}")
     st.stop()
-
+ 
 # Streamlit config
-st.set_page_config(layout="wide", page_title="Dashboard de Vendas - Google Drive")
-
+st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
+ 
 # Estilo CSS
 st.markdown("""
     <style>
@@ -610,32 +701,27 @@ st.markdown("""
             transform: translateY(-2px);
             box-shadow: 0 6px 12px rgba(0,0,0,0.3);
         }
+        .creditos {
+            text-align: center;
+            color: #B0B0B0;
+            font-size: 0.9em;
+            margin-top: 30px;
+            padding: 10px;
+        }
     </style>
 """, unsafe_allow_html=True)
-
-# ===== TÍTULO E BOTÃO DE SINCRONIZAÇÃO =====
-
-st.title("📊 DASHBOARD DE VENDAS")
-
-# Botão de ressincronização proeminente
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    if st.button("🔄 RESSINCRONIZAR COM GOOGLE DRIVE", type="primary"):
-        with st.spinner("Ressincronizando com o Google Drive..."):
-            refresh_drive_data()
-            st.success("✅ Ressincronização concluída com sucesso!")
-
+ 
 # ===== SIDEBAR =====
-
-st.sidebar.title("📊 Menu de Navegação")
-
+ 
+st.sidebar.title("📊 MENU DE NAVEGAÇÃO")
+ 
 # Status da sincronização com Google Drive
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
-st.sidebar.markdown("### 🔄 Status Google Drive")
-
+st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE")
+ 
 # Carregar dados
 df = carregar_dados_google_drive()
-
+ 
 if not df.empty:
     st.sidebar.success("✅ Conectado ao Google Drive")
     if "arquivos_info" in st.session_state:
@@ -645,20 +731,23 @@ if not df.empty:
 else:
     st.sidebar.error("❌ Erro na conexão")
     st.sidebar.caption("Verifique a autenticação")
-
+ 
 st.sidebar.markdown('</div>', unsafe_allow_html=True)
-
-# Botão para recarregar dados no sidebar
-if st.sidebar.button("🔄 Recarregar Dados"):
-    refresh_drive_data()
-
+ 
+# Botões de recarregar e verificar novos arquivos
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    if st.button("🔄 Recarregar Dados"):
+        refresh_drive_data()
+with col2:
+    if st.button("🔍 Verificar Novos"):
+        check_new_files()
+ 
 # Separador visual
 st.sidebar.markdown("---")
-
-# Seção de filtros
-st.sidebar.markdown('<div class="filtro-topo">', unsafe_allow_html=True)
-st.sidebar.markdown("### 📅 Filtros de Período")
-
+ 
+# ===== CONTEÚDO PRINCIPAL =====
+ 
 if not df.empty:
     # Processar dados
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
@@ -675,8 +764,48 @@ if not df.empty:
     mes_atual = hoje.month
     ano_atual = hoje.year
     
-    # Criar colunas para o sidebar
-    col_ano, col_mes = st.sidebar.columns(2)
+    # Calcular período da meta
+    if mes_atual == 1:
+        inicio_meta = dt(ano_atual - 1, 12, 26).replace(hour=0, minute=0, second=0)
+        fim_meta = dt(ano_atual, 1, 25).replace(hour=23, minute=59, second=59)
+    else:
+        inicio_meta = dt(ano_atual, mes_atual - 1, 26).replace(hour=0, minute=0, second=0)
+        fim_meta = dt(ano_atual, mes_atual, 25).replace(hour=23, minute=59, second=59)
+    
+    # Filtrar dados para o período da meta
+    df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
+    
+    # Calcular valor total vendido sem duplicatas
+    df_meta_sem_duplicatas = df_meta.drop_duplicates(subset=['Número do Pedido'])
+    valor_total_vendido = df_meta_sem_duplicatas["Valor Total Z19-Z24"].sum() if not df_meta_sem_duplicatas.empty else 0
+    
+    # Calcular estatísticas
+    total_pedidos = len(df_meta)
+    pedidos_unicos = len(df_meta_sem_duplicatas)
+    duplicatas = total_pedidos - pedidos_unicos
+    
+    meta_total = 200_000
+    percentual_meta = min(1.0, valor_total_vendido / meta_total)
+    valor_restante = max(0, meta_total - valor_total_vendido)
+    
+    # Exibir meta mensal
+    st.subheader(f"META MENSAL PERÍODO: {inicio_meta.strftime('%d/%m/%Y')} A {fim_meta.strftime('%d/%m/%Y')}")
+    st.markdown("<hr style='border: 1px solid #3A3A52;'>", unsafe_allow_html=True)
+    
+    st.progress(percentual_meta, text=f"Progresso da Meta: {percentual_meta*100:.1f}%")
+    st.caption(f"Número de pedidos processados: {total_pedidos} | Pedidos únicos: {pedidos_unicos} | Duplicatas: {duplicatas}")
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Vendido (Z19-Z24)", f"R$ {valor_total_vendido:,.2f}")
+    col2.metric("Meta", f"R$ {meta_total:,.2f}")
+    col3.metric("Restante", f"R$ {valor_restante:,.2f}")
+    
+    # FILTROS DE PERÍODO MOVIDOS PARA AQUI
+    st.markdown('<div class="filtro-topo">', unsafe_allow_html=True)
+    st.markdown("### 📅 FILTROS DE PERÍODO")
+    
+    # Criar colunas para os filtros
+    col_ano, col_mes = st.columns(2)
     
     # Filtro de ano
     with col_ano:
@@ -710,9 +839,9 @@ if not df.empty:
         
         mes_selecionado_num = meses_disponiveis[nomes_meses.index(mes_selecionado)]
     
-    st.sidebar.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
     
-    # Calcular período da meta
+    # Recalcular período da meta com base nos filtros
     if mes_selecionado_num == 1:
         inicio_meta = dt(ano_selecionado - 1, 12, 26).replace(hour=0, minute=0, second=0)
         fim_meta = dt(ano_selecionado, 1, 25).replace(hour=23, minute=59, second=59)
@@ -722,32 +851,6 @@ if not df.empty:
     
     # Filtrar dados para o período da meta
     df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
-    
-    # Calcular valor total vendido sem duplicatas
-    df_meta_sem_duplicatas = df_meta.drop_duplicates(subset=['Número do Pedido'])
-    valor_total_vendido = df_meta_sem_duplicatas["Valor Total Z19-Z24"].sum() if not df_meta_sem_duplicatas.empty else 0
-    
-    # Calcular estatísticas
-    total_pedidos = len(df_meta)
-    pedidos_unicos = len(df_meta_sem_duplicatas)
-    duplicatas = total_pedidos - pedidos_unicos
-    
-    meta_total = 200_000
-    percentual_meta = min(1.0, valor_total_vendido / meta_total)
-    valor_restante = max(0, meta_total - valor_total_vendido)
-    
-    # ===== CONTEÚDO PRINCIPAL =====
-    
-    st.subheader(f"Meta Mensal Período: {inicio_meta.strftime('%d/%m/%Y')} a {fim_meta.strftime('%d/%m/%Y')}")
-    st.markdown("<hr style='border: 1px solid #3A3A52;'>", unsafe_allow_html=True)
-    
-    st.progress(percentual_meta, text=f"Progresso da Meta: {percentual_meta*100:.1f}%")
-    st.caption(f"Número de pedidos processados: {total_pedidos} | Pedidos únicos: {pedidos_unicos} | Duplicatas: {duplicatas}")
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Vendido (Z19-Z24)", f"R$ {valor_total_vendido:,.2f}")
-    col2.metric("Meta", f"R$ {meta_total:,.2f}")
-    col3.metric("Restante", f"R$ {valor_restante:,.2f}")
     
     # Criar abas
     tab1, tab2, tab3 = st.tabs(["Desempenho Individual", "Análise de Clientes", "Cálculo de Meta"])
@@ -1201,16 +1304,9 @@ if not df.empty:
             - **Bônus por Volume**: R$ 200,00 a cada R$ 50.000,00 vendido
             - **Prêmio Meta Mensal**: R$ 600,00 (se meta de R$ 200.000,00 for atingida)
             """)
-
+ 
 else:
     st.warning("⚠️ Nenhum dado disponível. Verifique a configuração do Google Drive.")
-
-# Instruções no rodapé
-st.markdown("---")
-st.markdown("""
-### 📋 Como funciona:
-1. **Google Drive Desktop**: Instale no seu computador e sincronize a pasta com seus arquivos Excel
-2. **Streamlit Cloud**: O dashboard está hospedado na nuvem e acessível de qualquer lugar
-3. **Atualização Automática**: Quando você adiciona um arquivo na pasta local, ele é enviado para o Google Drive e o dashboard detecta automaticamente
-4. **Cache Inteligente**: Os dados ficam em cache por 5 minutos para melhor performance
-""")
+ 
+# Créditos
+st.markdown('<div class="creditos">developed by @joao_vendascastor</div>', unsafe_allow_html=True)
