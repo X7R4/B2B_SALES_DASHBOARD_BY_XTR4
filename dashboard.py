@@ -16,6 +16,9 @@ from datetime import datetime as dt
 import time
 import json
 from workalendar.america import Brazil  # Biblioteca para calcular dias úteis no Brasil
+import concurrent.futures
+import threading
+from queue import Queue
 
 # Bibliotecas Google
 from google.oauth2 import service_account
@@ -30,6 +33,10 @@ SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
 # Variável global para controle de sincronização
 last_sync_time = None
+
+# Fila para processamento em segundo plano
+processing_queue = Queue()
+stop_event = threading.Event()
 
 # Função para obter credenciais dos segredos
 def get_credentials():
@@ -121,9 +128,15 @@ def list_drive_files(service, folder_id):
         st.error(f"Erro ao listar arquivos: {e}")
         return []
 
-def download_drive_file(service, file_id, file_name):
-    """Baixa um arquivo do Google Drive e retorna como DataFrame"""
+def download_and_process_file(service, file_info, progress_callback=None):
+    """Baixa e processa um arquivo do Google Drive"""
     try:
+        file_id = file_info['id']
+        file_name = file_info['name']
+        
+        if progress_callback:
+            progress_callback(f"Baixando {file_name}")
+        
         request = service.files().get_media(fileId=file_id)
         file_content = io.BytesIO()
         downloader = MediaIoBaseDownload(file_content, request)
@@ -132,14 +145,18 @@ def download_drive_file(service, file_id, file_name):
             status, done = downloader.next_chunk()
         
         # Ler o arquivo Excel
+        if progress_callback:
+            progress_callback(f"Processando {file_name}")
+        
         try:
             df = pd.read_excel(file_content, header=None)
-            return process_excel_data(df, file_name)
+            result = process_excel_data(df, file_name)
+            return result
         except Exception as e:
             st.error(f"Erro ao processar {file_name}: {e}")
             return pd.DataFrame()
     except Exception as e:
-        st.error(f"Erro ao baixar {file_name}: {e}")
+        st.error(f"Erro ao baixar {file_name['name']}: {e}")
         return pd.DataFrame()
 
 # ===== FUNÇÕES DE PROCESSAMENTO (MANTIDAS) =====
@@ -433,6 +450,34 @@ def refresh_drive_data():
     # Recarregar a página
     st.rerun()
 
+def process_files_in_parallel(service, files, max_workers=5, progress_callback=None):
+    """Processa múltiplos arquivos em paralelo"""
+    all_data = []
+    total_files = len(files)
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Criar um dicionário para mapear futuros aos arquivos
+        future_to_file = {
+            executor.submit(download_and_process_file, service, file_info, progress_callback): file_info 
+            for file_info in files
+        }
+        
+        completed = 0
+        for future in concurrent.futures.as_completed(future_to_file):
+            file_info = future_to_file[future]
+            try:
+                df_result = future.result()
+                if not df_result.empty:
+                    all_data.append(df_result)
+                
+                completed += 1
+                if progress_callback:
+                    progress_callback(f"Concluído {completed}/{total_files}")
+            except Exception as e:
+                st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
+    
+    return all_data
+
 def check_new_files():
     """Verifica e processa apenas arquivos novos na pasta 'pedidos' do Google Drive"""
     # Autenticar
@@ -482,20 +527,12 @@ def check_new_files():
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    all_data = []
-    total_files = len(novos_arquivos)
+    def progress_callback(message):
+        status_text.text(message)
+        progress_bar.progress(len(novos_arquivos) / len(novos_arquivos))
     
-    for i, file_info in enumerate(novos_arquivos):
-        status_text.text(f"Processando {i+1}/{total_files}: {file_info['name']}")
-        
-        # Baixar e processar arquivo
-        df_file = download_drive_file(service, file_info['id'], file_info['name'])
-        
-        if not df_file.empty:
-            all_data.append(df_file)
-        
-        # Atualizar progresso
-        progress_bar.progress((i + 1) / total_files)
+    # Processar arquivos em paralelo
+    all_data = process_files_in_parallel(service, novos_arquivos, max_workers=5, progress_callback=progress_callback)
     
     # Se temos dados novos, atualizar o DataFrame
     if all_data:
@@ -584,20 +621,12 @@ def carregar_dados_google_drive():
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        all_data = []
-        total_files = len(files)
+        def progress_callback(message):
+            status_text.text(message)
+            progress_bar.progress(len(files) / len(files))
         
-        for i, file_info in enumerate(files):
-            status_text.text(f"Processando {i+1}/{total_files}: {file_info['name']}")
-            
-            # Baixar e processar arquivo
-            df_file = download_drive_file(service, file_info['id'], file_info['name'])
-            
-            if not df_file.empty:
-                all_data.append(df_file)
-            
-            # Atualizar progresso
-            progress_bar.progress((i + 1) / total_files)
+        # Processar arquivos em paralelo
+        all_data = process_files_in_parallel(service, files, max_workers=5, progress_callback=progress_callback)
         
         # Combinar todos os dados
         if all_data:
@@ -621,7 +650,105 @@ def carregar_dados_google_drive():
         # Retornar dados do cache
         return st.session_state.df_dados
 
+# ===== FUNÇÃO DE DETECÇÃO AUTOMÁTICA =====
+
+def auto_check_new_files():
+    """Função que verifica automaticamente novos arquivos a cada 5 minutos"""
+    while not stop_event.is_set():
+        try:
+            # Verificar se já sincronizou recentemente (menos de 5 minutos)
+            if "ultima_verificacao" in st.session_state:
+                tempo_desde_ultima_verificacao = (dt.now() - st.session_state.ultima_verificacao).total_seconds()
+                if tempo_desde_ultima_verificacao >= 300:  # 5 minutos
+                    # Adicionar à fila de processamento
+                    processing_queue.put("check_new_files")
+            
+            # Aguardar 1 minuto antes da próxima verificação
+            time.sleep(60)
+        except Exception as e:
+            print(f"Erro na verificação automática: {e}")
+            time.sleep(60)
+
+def process_queue():
+    """Processa a fila de tarefas em segundo plano"""
+    while not stop_event.is_set():
+        try:
+            # Obter tarefa da fila (com timeout de 1 segundo)
+            task = processing_queue.get(timeout=1)
+            
+            if task == "check_new_files":
+                # Executar verificação de novos arquivos
+                creds = authenticate_google_drive()
+                if creds:
+                    service = build('drive', 'v3', credentials=creds)
+                    files = list_drive_files(service, FOLDER_ID)
+                    
+                    if files:
+                        # Verificar se há arquivos novos ou modificados
+                        novos_arquivos = []
+                        arquivos_atuais = {f['id']: f['modifiedTime'] for f in files}
+                        
+                        if "arquivos_info" in st.session_state:
+                            arquivos_cache = {f['id']: f['modifiedTime'] for f in st.session_state.arquivos_info}
+                            
+                            for file_id, modified_time in arquivos_atuais.items():
+                                if file_id not in arquivos_cache or arquivos_cache[file_id] != modified_time:
+                                    # Encontrar o arquivo completo
+                                    for file_info in files:
+                                        if file_info['id'] == file_id:
+                                            novos_arquivos.append(file_info)
+                                            break
+                        else:
+                            # Primeira carga - processar todos os arquivos
+                            novos_arquivos = files
+                        
+                        if novos_arquivos:
+                            # Processar arquivos em paralelo
+                            all_data = process_files_in_parallel(service, novos_arquivos, max_workers=5)
+                            
+                            # Se temos dados novos, atualizar o DataFrame
+                            if all_data:
+                                # Combinar dados novos com os existentes
+                                if "df_dados" in st.session_state:
+                                    df_existente = st.session_state.df_dados
+                                    
+                                    # Remover pedidos que possam estar nos arquivos novos
+                                    arquivos_novos_nomes = [f['name'] for f in novos_arquivos]
+                                    df_filtrado = df_existente[~df_existente['Arquivo Origem'].isin(arquivos_novos_nomes)]
+                                    
+                                    # Combinar com os novos dados
+                                    df_novos = pd.concat(all_data, ignore_index=True)
+                                    final_df = pd.concat([df_filtrado, df_novos], ignore_index=True)
+                                else:
+                                    # Primeira carga
+                                    final_df = pd.concat(all_data, ignore_index=True)
+                                
+                                # Remover duplicatas
+                                final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
+                                
+                                # Salvar em cache
+                                st.session_state.df_dados = final_df
+                                st.session_state.arquivos_info = files
+                                st.session_state.ultima_atualizacao = dt.now()
+                                st.session_state.ultima_verificacao = dt.now()
+                                st.session_state.primeira_carga = False
+                                
+                                # Notificar o usuário
+                                st.toast(f"✅ {len(novos_arquivos)} novos arquivos processados automaticamente!", icon="✅")
+            
+            # Marcar tarefa como concluída
+            processing_queue.task_done()
+        except Exception as e:
+            print(f"Erro ao processar fila: {e}")
+
 # ===== CONFIGURAÇÃO INICIAL =====
+
+# Iniciar threads em segundo plano
+auto_check_thread = threading.Thread(target=auto_check_new_files, daemon=True)
+process_queue_thread = threading.Thread(target=process_queue, daemon=True)
+
+auto_check_thread.start()
+process_queue_thread.start()
 
 # Carregar arquivos de estados e municípios
 try:
@@ -852,6 +979,21 @@ if limitar_arquivos:
         value=100,
         step=50
     )
+
+# Adicionar controle para processamento paralelo
+st.sidebar.markdown("### ⚡ OTIMIZAÇÃO")
+processamento_paralelo = st.sidebar.checkbox("Processamento paralelo", value=True)
+num_workers = st.sidebar.number_input(
+    "Número de workers", 
+    min_value=1, 
+    max_value=10, 
+    value=5,
+    step=1
+)
+
+# Adicionar controle para detecção automática
+st.sidebar.markdown("### 🔄 DETECÇÃO AUTOMÁTICA")
+auto_detect = st.sidebar.checkbox("Verificar novos arquivos automaticamente", value=True)
 
 # Carregar dados
 df = carregar_dados_google_drive()
@@ -1512,8 +1654,27 @@ if not df.empty:
         st.markdown(f'<div class="ganhos-valor">R$ {ganhos_totais:,.2f}</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
         
+        with st.expander("Regras de Cálculo"):
+            st.markdown("""
+            ### Percentuais de Comissão:
+            - **KIT AR**: 0.7% (calculado para qualquer valor de vendas)
+            - **Peças Avulsas e Kit Rosca**: 0.5% (calculado para qualquer valor de vendas)
+            
+            ### Bônus:
+            - **Bônus por Volume**: R$ 200,00 a cada R$ 50.000,00 vendido
+            - **Prêmio Meta Mensal**: R$ 600,00 (se meta de R$ 200.000,00 for atingida)
+            
+            ### Cálculo dos Novos Campos:
+            - **Quanto deveria estar**: Valor esperado com base no progresso dos dias úteis
+            - **Dias Úteis Faltantes**: Contagem de dias úteis restantes (excluindo sábados e domingos)
+            - **Quanto deve vender por dia**: Valor necessário para atingir a meta nos dias úteis restantes
+            """)
+
 else:
     st.warning("⚠️ Nenhum dado disponível. Verifique a configuração do Google Drive.")
 
 # Créditos
 st.markdown('<div class="creditos">developed by @joao_vendascastor</div>', unsafe_allow_html=True)
+
+# Parar threads quando o aplicativo for fechado
+stop_event.set()
