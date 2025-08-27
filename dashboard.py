@@ -15,21 +15,21 @@ import sys
 from datetime import datetime as dt
 import time
 import json
-
+ 
 # Bibliotecas Google
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
-
+ 
 # ===== CONFIGURAÇÃO =====
 # Substitua pelo ID da sua pasta no Google Drive
 FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # ALTERE ESTE VALOR!
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-
+ 
 # Variável global para controle de sincronização
 last_sync_time = None
-
+ 
 # Função para obter credenciais dos segredos
 def get_credentials():
     try:
@@ -55,7 +55,7 @@ def get_credentials():
     except Exception as e:
         st.error(f"Erro ao carregar credenciais: {e}")
         return None
-
+ 
 # Atualizar a função de autenticação
 def authenticate_google_drive():
     """Autentica com o Google Drive usando Service Account"""
@@ -91,7 +91,7 @@ def authenticate_google_drive():
     except Exception as e:
         st.error(f"Erro ao carregar credenciais: {e}")
         return None
-
+ 
 def list_drive_files(service, folder_id):
     """Lista todos os arquivos Excel de uma pasta no Google Drive"""
     try:
@@ -106,7 +106,7 @@ def list_drive_files(service, folder_id):
     except Exception as e:
         st.error(f"Erro ao listar arquivos: {e}")
         return []
-
+ 
 def download_drive_file(service, file_id, file_name):
     """Baixa um arquivo do Google Drive e retorna como DataFrame"""
     try:
@@ -127,9 +127,9 @@ def download_drive_file(service, file_id, file_name):
     except Exception as e:
         st.error(f"Erro ao baixar {file_name}: {e}")
         return pd.DataFrame()
-
+ 
 # ===== FUNÇÕES DE PROCESSAMENTO (MANTIDAS) =====
-
+ 
 def process_excel_data(df, file_name):
     """Processa os dados do Excel na mesma estrutura que a API usava"""
     pedidos = []
@@ -210,7 +210,7 @@ def process_excel_data(df, file_name):
         st.error(f"Erro ao processar arquivo {file_name}: {e}")
     
     return pd.DataFrame(pedidos)
-
+ 
 def verificar_duplicatas(df):
     """Verifica e relata duplicatas no DataFrame"""
     duplicatas = df[df.duplicated(subset=['Número do Pedido'], keep=False)]
@@ -227,7 +227,7 @@ def verificar_duplicatas(df):
         st.success("✅ Nenhuma duplicata encontrada!")
         st.caption(f"Total de pedidos: {len(df)} | Todos são únicos")
         return False
-
+ 
 def limpar_duplicatas(df):
     """Remove duplicatas do DataFrame"""
     df_limpo = df.drop_duplicates(subset=['Número do Pedido', 'Data'])
@@ -236,14 +236,14 @@ def limpar_duplicatas(df):
     st.caption(f"Registros antes: {len(df)} | Registros depois: {len(df_limpo)}")
     
     return df_limpo
-
+ 
 def normalize_text(text):
     """Normaliza texto (remover acentos e converter para maiúsculas)"""
     if pd.isna(text):
         return ""
     text = ''.join(c for c in unicodedata.normalize('NFD', str(text)) if unicodedata.category(c) != 'Mn')
     return text.strip().upper()
-
+ 
 def find_closest_city_with_state(city, state, city_list, municipios_df, estados_df, threshold=70):
     """Encontra a cidade mais próxima com fuzzy matching considerando o estado"""
     if not city or city == "DESCONHECIDO":
@@ -280,14 +280,14 @@ def find_closest_city_with_state(city, state, city_list, municipios_df, estados_
             return matched_city, city_info.iloc[0]['latitude'], city_info.iloc[0]['longitude']
     
     return None, None, None
-
+ 
 def get_estado_codigo(estado_normalizado, estados_df):
     """Obtém o código do estado a partir da sigla normalizada"""
     estado_info = estados_df[estados_df['uf_normalizado'] == estado_normalizado]
     if not estado_info.empty:
         return estado_info.iloc[0]['codigo_uf']
     return None
-
+ 
 def get_week(data, start_date, end_date):
     """Determina a semana do mês com base no intervalo de 26 a 25"""
     total_days = (end_date - start_date).days + 1
@@ -296,7 +296,7 @@ def get_week(data, start_date, end_date):
     days_since_start = (data - start_date).days
     week = ((days_since_start * 4) // total_days) + 1 if days_since_start >= 0 else 0
     return min(max(week, 1), 4)
-
+ 
 def classificar_produto(descricao):
     """Classifica produtos nas categorias especificadas"""
     kits_ar = ["KIT 1", "KIT 2", "KIT 3", "KIT 4", "KIT 5", "KIT 6", "KIT 7", 
@@ -308,7 +308,7 @@ def classificar_produto(descricao):
         return "KITS ROSCA"
     else:
         return "PEÇAS AVULSAS"
-
+ 
 def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
     """Calcula comissões e bônus com base nas vendas do período"""
     df_periodo = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
@@ -354,7 +354,7 @@ def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
     })
     
     return resultados, valor_total_vendido, meta_atingida
-
+ 
 def identificar_lojistas_recuperar(df):
     """Identifica lojistas a recuperar"""
     pedidos_por_cliente = df.groupby('Cliente').size().reset_index(name='num_pedidos')
@@ -379,7 +379,7 @@ def identificar_lojistas_recuperar(df):
         return lojistas_recuperar
     
     return pd.DataFrame()
-
+ 
 def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     """Gera tabela de pedidos para o período da meta especificado"""
     df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
@@ -394,9 +394,9 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     tabela = tabela.sort_values("Data do Pedido")
     
     return tabela
-
+ 
 # ===== FUNÇÃO DE REFRESH =====
-
+ 
 def refresh_drive_data():
     """Força a atualização completa dos dados do Google Drive"""
     # Limpar o cache
@@ -418,7 +418,7 @@ def refresh_drive_data():
     
     # Recarregar a página
     st.rerun()
-
+ 
 def check_new_files():
     """Verifica e processa apenas arquivos novos no Google Drive"""
     # Autenticar
@@ -509,9 +509,9 @@ def check_new_files():
         st.session_state.primeira_carga = False
     else:
         st.warning("⚠️ Nenhum dado válido encontrado nos novos arquivos")
-
+ 
 # ===== FUNÇÃO PRINCIPAL DE CARREGAMENTO =====
-
+ 
 @st.cache_data(ttl=300)
 def carregar_dados_google_drive():
     """Carrega dados do Google Drive com cache e verificação automática de novos arquivos"""
@@ -601,9 +601,9 @@ def carregar_dados_google_drive():
     else:
         # Retornar dados do cache
         return st.session_state.df_dados
-
+ 
 # ===== CONFIGURAÇÃO INICIAL =====
-
+ 
 # Carregar arquivos de estados e municípios
 try:
     estados_df = pd.read_csv("estados.csv")
@@ -618,10 +618,10 @@ try:
 except Exception as e:
     st.error(f"Erro ao carregar arquivos de referência: {e}")
     st.stop()
-
+ 
 # Streamlit config
 st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
-
+ 
 # Estilo CSS com cores Castor
 st.markdown("""
     <style>
@@ -803,18 +803,18 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
-
+ 
 # ===== SIDEBAR =====
-
+ 
 st.sidebar.title("📊 MENU DE SINCRONIZAÇÃO")
-
+ 
 # Status da sincronização com Google Drive
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
 st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE")
-
+ 
 # Carregar dados
 df = carregar_dados_google_drive()
-
+ 
 if not df.empty:
     st.sidebar.success("✅ Conectado ao Google Drive")
     if "arquivos_info" in st.session_state:
@@ -824,9 +824,9 @@ if not df.empty:
 else:
     st.sidebar.error("❌ Erro na conexão")
     st.sidebar.caption("Verifique a autenticação")
-
+ 
 st.sidebar.markdown('</div>', unsafe_allow_html=True)
-
+ 
 # Botões de recarregar e verificar novos arquivos
 col1, col2 = st.sidebar.columns(2)
 with col1:
@@ -835,12 +835,12 @@ with col1:
 with col2:
     if st.button("🔍 Verificar Novos"):
         check_new_files()
-
+ 
 # Separador visual
 st.sidebar.markdown("---")
-
+ 
 # ===== CONTEÚDO PRINCIPAL =====
-
+ 
 if not df.empty:
     # Processar dados
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
@@ -884,6 +884,7 @@ if not df.empty:
             else:
                 meses_disponiveis = sorted(df["Data"].dt.month.unique())
             
+            # Mapear números de mês para nomes completos
             nomes_meses = [calendar.month_name[mes] for mes in meses_disponiveis]
             
             if mes_atual in meses_disponiveis and ano_selecionado == ano_atual:
@@ -898,15 +899,13 @@ if not df.empty:
                 key="mes_selecionado"
             )
             
-            mes_selecionado_num = meses_disponiveis[nomes_meses.index(mes_selecionado)]
+            # Converter nome do mês para número
+            mes_selecionado_num = list(calendar.month_name).index(mes_selecionado)
         
         st.markdown('</div>', unsafe_allow_html=True)
         
         # Filtrar dados para o período selecionado
-        mes_ano = mes_selecionado.split(" / ") if "/" in mes_selecionado else [mes_selecionado]
-        mes = list(calendar.month_abbr).index(mes_ano[0]) if len(mes_ano) > 0 else mes_selecionado_num
-        ano = int(mes_ano[1]) if len(mes_ano) > 1 else ano_selecionado
-        inicio_periodo_local = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
+        inicio_periodo_local = dt(ano_selecionado, mes_selecionado_num, 26).replace(hour=0, minute=0, second=0)
         fim_periodo_local = (inicio_periodo_local + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
         df_desempenho_local = df[(df["Data"] >= inicio_periodo_local) & (df["Data"] <= fim_periodo_local)].copy()
         
@@ -920,7 +919,7 @@ if not df.empty:
             st.plotly_chart(fig_dia, width="stretch")
             
             # Comparação de Vendas: Ano Atual vs Ano Anterior
-            inicio_atual = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
+            inicio_atual = dt(ano_selecionado, mes_selecionado_num, 26).replace(hour=0, minute=0, second=0)
             fim_atual = (inicio_atual + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
             inicio_anterior = inicio_atual - relativedelta(years=1)
             fim_anterior = fim_atual - relativedelta(years=1)
@@ -937,8 +936,8 @@ if not df.empty:
             vendas_anterior_week["Período"] = vendas_anterior_week["Semana"].apply(lambda x: f"Semana {x}")
             
             fig_comparacao_ano = go.Figure()
-            fig_comparacao_ano.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano}', line=dict(color='#FF8C00')))
-            fig_comparacao_ano.add_trace(go.Scatter(x=vendas_anterior_week["Período"], y=vendas_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano-1}', line=dict(color='#FFA500')))
+            fig_comparacao_ano.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano_selecionado}', line=dict(color='#FF8C00')))
+            fig_comparacao_ano.add_trace(go.Scatter(x=vendas_anterior_week["Período"], y=vendas_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano_selecionado-1}', line=dict(color='#FFA500')))
             fig_comparacao_ano.update_layout(
                 template="plotly_dark",
                 xaxis_title="Semanas",
@@ -950,8 +949,8 @@ if not df.empty:
             st.plotly_chart(fig_comparacao_ano, width="stretch")
             
             # Comparação de Vendas: Mês Atual vs Mês Anterior
-            if mes > 1:
-                inicio_mes_anterior = dt(ano, mes - 1, 26).replace(hour=0, minute=0, second=0)
+            if mes_selecionado_num > 1:
+                inicio_mes_anterior = dt(ano_selecionado, mes_selecionado_num - 1, 26).replace(hour=0, minute=0, second=0)
                 fim_mes_anterior = (inicio_mes_anterior + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
                 
                 df_mes_anterior = df[(df["Data"] >= inicio_mes_anterior) & (df["Data"] <= fim_mes_anterior)].copy()
@@ -960,8 +959,8 @@ if not df.empty:
                 vendas_mes_anterior_week["Período"] = vendas_mes_anterior_week["Semana"].apply(lambda x: f"Semana {x}")
                 
                 fig_comparacao_mes = go.Figure()
-                fig_comparacao_mes.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[mes]} {ano}', line=dict(color='#FF8C00')))
-                fig_comparacao_mes.add_trace(go.Scatter(x=vendas_mes_anterior_week["Período"], y=vendas_mes_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[mes-1]} {ano}', line=dict(color='#E94F37')))
+                fig_comparacao_mes.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[mes_selecionado_num]} {ano_selecionado}', line=dict(color='#FF8C00')))
+                fig_comparacao_mes.add_trace(go.Scatter(x=vendas_mes_anterior_week["Período"], y=vendas_mes_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[mes_selecionado_num-1]} {ano_selecionado}', line=dict(color='#E94F37')))
                 fig_comparacao_mes.update_layout(
                     template="plotly_dark",
                     xaxis_title="Semanas",
@@ -1336,6 +1335,7 @@ if not df.empty:
             else:
                 meses_disponiveis = sorted(df["Data"].dt.month.unique())
             
+            # Mapear números de mês para nomes completos
             nomes_meses = [calendar.month_name[mes] for mes in meses_disponiveis]
             
             if mes_atual in meses_disponiveis and ano_meta == ano_atual:
@@ -1350,7 +1350,8 @@ if not df.empty:
                 key="mes_meta"
             )
             
-            mes_meta_num = meses_disponiveis[nomes_meses.index(mes_meta)]
+            # Converter nome do mês para número
+            mes_meta_num = list(calendar.month_name).index(mes_meta)
         
         st.markdown('</div>', unsafe_allow_html=True)
         
@@ -1415,11 +1416,9 @@ if not df.empty:
             - **Bônus por Volume**: R$ 200,00 a cada R$ 50.000,00 vendido
             - **Prêmio Meta Mensal**: R$ 600,00 (se meta de R$ 200.000,00 for atingida)
             """)
-
+ 
 else:
     st.warning("⚠️ Nenhum dado disponível. Verifique a configuração do Google Drive.")
-
-# Instruções no rodapé
-
+ 
 # Créditos
 st.markdown('<div class="creditos">developed by @joao_vendascastor</div>', unsafe_allow_html=True)
