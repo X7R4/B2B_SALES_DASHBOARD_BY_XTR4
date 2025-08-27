@@ -15,7 +15,7 @@ import sys
 from datetime import datetime as dt
 import time
 import json
-from workalendar.america import Brazil  # Biblioteca para calcular dias úteis no Brasil
+from workalendar.america import Brazil
 import concurrent.futures
 import threading
 from queue import Queue
@@ -27,8 +27,7 @@ from googleapiclient.http import MediaIoBaseDownload
 import io
 
 # ===== CONFIGURAÇÃO =====
-# ID da pasta "pedidos" no Google Drive
-FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # ALTERE ESTE VALOR PARA O ID DA PASTA "pedidos"
+FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
 # Variável global para controle de sincronização
@@ -38,10 +37,14 @@ last_sync_time = None
 processing_queue = Queue()
 stop_event = threading.Event()
 
-# Função para obter credenciais dos segredos
+# Inicializar session_state para mensagens
+if "toast_messages" not in st.session_state:
+    st.session_state.toast_messages = []
+if "error_messages" not in st.session_state:
+    st.session_state.error_messages = []
+
 def get_credentials():
     try:
-        # Criar dicionário de credenciais a partir dos segredos
         credentials_info = {
             "type": st.secrets["gcp_service_account"]["type"],
             "project_id": st.secrets["gcp_service_account"]["project_id"],
@@ -55,24 +58,19 @@ def get_credentials():
             "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
         }
         
-        # Criar credenciais a partir do dicionário
         credentials = service_account.Credentials.from_service_account_info(
             credentials_info, scopes=SCOPES
         )
         return credentials
     except Exception as e:
-        st.error(f"Erro ao carregar credenciais: {e}")
+        st.session_state.error_messages.append(f"Erro ao carregar credenciais: {e}")
         return None
 
-# Atualizar a função de autenticação
 def authenticate_google_drive():
-    """Autentica com o Google Drive usando Service Account"""
     global last_sync_time
     
     try:
-        # Verificar se já sincronizou recentemente (menos de 1 minuto)
         if last_sync_time and (dt.now() - last_sync_time).total_seconds() < 60:
-            st.info("Sincronização recente detectada. Aguarde um momento...")
             return None
             
         credentials_info = {
@@ -92,16 +90,13 @@ def authenticate_google_drive():
             credentials_info, scopes=SCOPES
         )
         
-        # Atualizar tempo da última sincronização
         last_sync_time = dt.now()
-        
         return creds
     except Exception as e:
-        st.error(f"Erro ao carregar credenciais: {e}")
+        st.session_state.error_messages.append(f"Erro ao carregar credenciais: {e}")
         return None
 
 def list_drive_files(service, folder_id):
-    """Lista todos os arquivos Excel de uma pasta no Google Drive com paginação"""
     try:
         query = f"parents in '{folder_id}' and mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
         page_token = None
@@ -125,11 +120,10 @@ def list_drive_files(service, folder_id):
                 
         return all_files
     except Exception as e:
-        st.error(f"Erro ao listar arquivos: {e}")
+        st.session_state.error_messages.append(f"Erro ao listar arquivos: {e}")
         return []
 
 def download_and_process_file(service, file_info, progress_callback=None):
-    """Baixa e processa um arquivo do Google Drive"""
     try:
         file_id = file_info['id']
         file_name = file_info['name']
@@ -144,55 +138,47 @@ def download_and_process_file(service, file_info, progress_callback=None):
         while not done:
             status, done = downloader.next_chunk()
         
-        # Ler o arquivo Excel
         if progress_callback:
             progress_callback(f"Processando {file_name}")
         
         try:
-            # Tentar ler com diferentes abordagens
             try:
                 df = pd.read_excel(file_content, header=None)
             except:
-                # Se falhar, tentar com header=0
                 try:
                     df = pd.read_excel(file_content, header=0)
                 except:
-                    # Se ainda falhar, tentar pular as primeiras linhas
                     try:
                         df = pd.read_excel(file_content, header=None, skiprows=5)
                     except Exception as e:
-                        st.error(f"Não foi possível ler o arquivo {file_name}: {e}")
+                        st.session_state.error_messages.append(f"Não foi possível ler o arquivo {file_name}: {e}")
                         return pd.DataFrame()
             
             result = process_excel_data(df, file_name)
             
-            # Adicionar log para depuração
             if not result.empty:
-                st.write(f"Arquivo {file_name} processado com sucesso: {len(result)} registros")
+                print(f"Arquivo {file_name} processado com sucesso: {len(result)} registros")
             else:
-                st.write(f"Arquivo {file_name} não retornou dados válidos")
+                print(f"Arquivo {file_name} não retornou dados válidos")
             
             return result
         except Exception as e:
-            st.error(f"Erro ao processar {file_name}: {e}")
+            st.session_state.error_messages.append(f"Erro ao processar {file_name}: {e}")
             return pd.DataFrame()
     except Exception as e:
-        st.error(f"Erro ao baixar {file_info['name']}: {e}")
+        st.session_state.error_messages.append(f"Erro ao baixar {file_info['name']}: {e}")
         return pd.DataFrame()
 
 # ===== FUNÇÕES DE PROCESSAMENTO =====
 
 def process_excel_data(df, file_name):
-    """Processa os dados do Excel na mesma estrutura que a API usava"""
     pedidos = []
     
     try:
-        # Verificar se o DataFrame tem estrutura esperada
         if df.empty or len(df) < 20 or len(df.columns) < 26:
-            st.warning(f"Estrutura inesperada no arquivo {file_name}. Pulando arquivo.")
+            st.session_state.error_messages.append(f"Estrutura inesperada no arquivo {file_name}. Pulando arquivo.")
             return pd.DataFrame()
         
-        # Extrair data do pedido
         data_pedido_raw = None
         try:
             data_pedido_raw = df.iloc[1, 15] if len(df) > 1 and len(df.columns) > 15 else None
@@ -207,7 +193,6 @@ def process_excel_data(df, file_name):
         except:
             data_pedido = None
         
-        # Extrair valores Z19-Z24
         valores_z19_z24 = []
         for i in range(18, 24):
             try:
@@ -223,7 +208,6 @@ def process_excel_data(df, file_name):
         
         valor_total_z = sum(valores_z19_z24) if valores_z19_z24 else 0
         
-        # Extrair informações básicas
         try:
             numero_pedido = str(df.iloc[1, 8]) if len(df) > 1 and len(df.columns) > 8 else "Desconhecido"
         except:
@@ -249,7 +233,6 @@ def process_excel_data(df, file_name):
         except:
             estado = "Desconhecido"
         
-        # Processar produtos e quantidades
         for i in range(18, 24):
             try:
                 if i < len(df) and 0 < len(df.columns) and 2 < len(df.columns):
@@ -278,12 +261,11 @@ def process_excel_data(df, file_name):
                 continue
         
     except Exception as e:
-        st.error(f"Erro ao processar arquivo {file_name}: {e}")
+        st.session_state.error_messages.append(f"Erro ao processar arquivo {file_name}: {e}")
     
     return pd.DataFrame(pedidos)
 
 def verificar_duplicatas(df):
-    """Verifica e relata duplicatas no DataFrame"""
     duplicatas = df[df.duplicated(subset=['Número do Pedido'], keep=False)]
     
     if not duplicatas.empty:
@@ -300,7 +282,6 @@ def verificar_duplicatas(df):
         return False
 
 def limpar_duplicatas(df):
-    """Remove duplicatas do DataFrame"""
     df_limpo = df.drop_duplicates(subset=['Número do Pedido', 'Data'])
     
     st.success(f"Removidas {len(df) - len(df_limpo)} duplicatas!")
@@ -309,21 +290,18 @@ def limpar_duplicatas(df):
     return df_limpo
 
 def normalize_text(text):
-    """Normaliza texto (remover acentos e converter para maiúsculas)"""
     if pd.isna(text):
         return ""
     text = ''.join(c for c in unicodedata.normalize('NFD', str(text)) if unicodedata.category(c) != 'Mn')
     return text.strip().upper()
 
 def find_closest_city_with_state(city, state, city_list, municipios_df, estados_df, threshold=70):
-    """Encontra a cidade mais próxima com fuzzy matching considerando o estado"""
     if not city or city == "DESCONHECIDO":
         return None, None, None
     
     normalized_city = normalize_text(city)
     normalized_state = normalize_text(state) if state else None
     
-    # Primeiro, tentar encontrar a cidade no estado correto
     if normalized_state:
         estado_codigo = get_estado_codigo(normalized_state, estados_df)
         if estado_codigo is not None:
@@ -338,7 +316,6 @@ def find_closest_city_with_state(city, state, city_list, municipios_df, estados_
                     if not city_info.empty:
                         return matched_city, city_info.iloc[0]['latitude'], city_info.iloc[0]['longitude']
     
-    # Se não encontrou no estado correto, tentar encontrar em qualquer estado
     match = process.extractOne(normalized_city, city_list, scorer=fuzz.token_sort_ratio)
     if match and match[1] >= threshold:
         matched_city = match[0]
@@ -353,14 +330,12 @@ def find_closest_city_with_state(city, state, city_list, municipios_df, estados_
     return None, None, None
 
 def get_estado_codigo(estado_normalizado, estados_df):
-    """Obtém o código do estado a partir da sigla normalizada"""
     estado_info = estados_df[estados_df['uf_normalizado'] == estado_normalizado]
     if not estado_info.empty:
         return estado_info.iloc[0]['codigo_uf']
     return None
 
 def get_week(data, start_date, end_date):
-    """Determina a semana do mês com base no intervalo de 26 a 25"""
     total_days = (end_date - start_date).days + 1
     if total_days <= 0 or data < start_date or data > end_date:
         return 0
@@ -369,7 +344,6 @@ def get_week(data, start_date, end_date):
     return min(max(week, 1), 4)
 
 def classificar_produto(descricao):
-    """Classifica produtos nas categorias especificadas"""
     kits_ar = ["KIT 1", "KIT 2", "KIT 3", "KIT 4", "KIT 5", "KIT 6", "KIT 7", 
                "KIT UNIVERSAL", "KIT UPGRADE", "KIT AIR RIDE 4C", "KIT K3", "KIT K4", "KIT K5"]
     descricao_normalizada = str(descricao).strip().upper()
@@ -381,7 +355,6 @@ def classificar_produto(descricao):
         return "PEÇAS AVULSAS"
 
 def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
-    """Calcula comissões e bônus com base nas vendas do período"""
     df_periodo = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
     df_periodo = df_periodo.drop_duplicates(subset=['Número do Pedido'])
     
@@ -427,7 +400,6 @@ def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
     return resultados, valor_total_vendido, meta_atingida
 
 def identificar_lojistas_recuperar(df):
-    """Identifica lojistas a recuperar"""
     pedidos_por_cliente = df.groupby('Cliente').size().reset_index(name='num_pedidos')
     ultima_compra = df.groupby('Cliente')['Data'].max().reset_index(name='ultima_compra')
     clientes_info = pd.merge(pedidos_por_cliente, ultima_compra, on='Cliente')
@@ -452,7 +424,6 @@ def identificar_lojistas_recuperar(df):
     return pd.DataFrame()
 
 def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
-    """Gera tabela de pedidos para o período da meta especificado"""
     df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
     
     if df_meta.empty:
@@ -469,15 +440,11 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
 # ===== FUNÇÃO DE REFRESH =====
 
 def refresh_drive_data():
-    """Força a atualização completa dos dados do Google Drive"""
-    # Limpar o cache
     st.cache_data.clear()
     
-    # Forçar nova autenticação
     global last_sync_time
     last_sync_time = None
     
-    # Limpar session state
     if "df_dados" in st.session_state:
         del st.session_state.df_dados
     if "ultima_atualizacao" in st.session_state:
@@ -487,18 +454,15 @@ def refresh_drive_data():
     if "arquivos_info" in st.session_state:
         del st.session_state.arquivos_info
     
-    # Recarregar a página
     st.rerun()
 
 def process_files_in_parallel(service, files, max_workers=5, progress_callback=None):
-    """Processa múltiplos arquivos em paralelo"""
     all_data = []
     total_files = len(files)
     successful_files = 0
     failed_files = 0
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Criar um dicionário para mapear futuros aos arquivos
         future_to_file = {
             executor.submit(download_and_process_file, service, file_info, progress_callback): file_info 
             for file_info in files
@@ -519,35 +483,30 @@ def process_files_in_parallel(service, files, max_workers=5, progress_callback=N
                 if progress_callback:
                     progress_callback(f"Concluído {completed}/{total_files}")
             except Exception as e:
-                st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
+                st.session_state.error_messages.append(f"Erro ao processar arquivo {file_info['name']}: {e}")
                 failed_files += 1
     
-    # Exibir resumo do processamento
-    st.write(f"Resumo do processamento:")
-    st.write(f"- Total de arquivos: {total_files}")
-    st.write(f"- Arquivos processados com sucesso: {successful_files}")
-    st.write(f"- Arquivos sem dados válidos: {failed_files}")
+    print(f"Resumo do processamento:")
+    print(f"- Total de arquivos: {total_files}")
+    print(f"- Arquivos processados com sucesso: {successful_files}")
+    print(f"- Arquivos sem dados válidos: {failed_files}")
     
     return all_data
 
 def check_new_files():
-    """Verifica e processa apenas arquivos novos na pasta 'pedidos' do Google Drive"""
-    # Autenticar
     creds = authenticate_google_drive()
     if not creds:
-        st.error("❌ Não foi possível autenticar com o Google Drive")
+        st.session_state.error_messages.append("❌ Não foi possível autenticar com o Google Drive")
         return
     
     service = build('drive', 'v3', credentials=creds)
     
-    # Listar arquivos atuais na pasta 'pedidos'
     files = list_drive_files(service, FOLDER_ID)
     
     if not files:
-        st.warning("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
+        st.session_state.error_messages.append("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
         return
     
-    # Verificar se há arquivos novos ou modificados
     novos_arquivos = []
     arquivos_atuais = {f['id']: f['modifiedTime'] for f in files}
     
@@ -556,26 +515,20 @@ def check_new_files():
         
         for file_id, modified_time in arquivos_atuais.items():
             if file_id not in arquivos_cache or arquivos_cache[file_id] != modified_time:
-                # Encontrar o arquivo completo
                 for file_info in files:
                     if file_info['id'] == file_id:
                         novos_arquivos.append(file_info)
                         break
     else:
-        # Primeira carga - processar todos os arquivos
         novos_arquivos = files
     
     if not novos_arquivos:
-        st.success("✅ Nenhum novo arquivo encontrado na pasta 'pedidos'")
+        st.session_state.toast_messages.append("✅ Nenhum novo arquivo encontrado na pasta 'pedidos'")
         st.session_state.ultima_verificacao = dt.now()
         return
     
-    # Mostrar lista de novos arquivos encontrados
-    st.subheader(f"📁 {len(novos_arquivos)} novos arquivos encontrados na pasta 'pedidos':")
-    for file_info in novos_arquivos:
-        st.write(f"- {file_info['name']} (Modificado: {file_info['modifiedTime']})")
+    st.session_state.toast_messages.append(f"📁 {len(novos_arquivos)} novos arquivos encontrados na pasta 'pedidos'")
     
-    # Mostrar progresso
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -583,54 +536,42 @@ def check_new_files():
         status_text.text(message)
         progress_bar.progress(len(novos_arquivos) / len(novos_arquivos))
     
-    # Processar arquivos em paralelo
     all_data = process_files_in_parallel(service, novos_arquivos, max_workers=5, progress_callback=progress_callback)
     
-    # Se temos dados novos, atualizar o DataFrame
     if all_data:
-        # Combinar dados novos com os existentes
         if "df_dados" in st.session_state:
             df_existente = st.session_state.df_dados
             
-            # Remover pedidos que possam estar nos arquivos novos
-            # (para evitar duplicatas caso um arquivo tenha sido atualizado)
             arquivos_novos_nomes = [f['name'] for f in novos_arquivos]
             df_filtrado = df_existente[~df_existente['Arquivo Origem'].isin(arquivos_novos_nomes)]
             
-            # Combinar com os novos dados
             df_novos = pd.concat(all_data, ignore_index=True)
             final_df = pd.concat([df_filtrado, df_novos], ignore_index=True)
         else:
-            # Primeira carga
             final_df = pd.concat(all_data, ignore_index=True)
         
-        # Remover duplicatas
         final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
         
-        st.success(f"✅ {len(novos_arquivos)} arquivos atualizados! {len(final_df)} pedidos no total")
+        st.session_state.toast_messages.append(f"✅ {len(novos_arquivos)} arquivos atualizados! {len(final_df)} pedidos no total")
         
-        # Salvar em cache
         st.session_state.df_dados = final_df
         st.session_state.arquivos_info = files
         st.session_state.ultima_atualizacao = dt.now()
         st.session_state.ultima_verificacao = dt.now()
         st.session_state.primeira_carga = False
     else:
-        st.warning("⚠️ Nenhum dado válido encontrado nos novos arquivos")
+        st.session_state.error_messages.append("⚠️ Nenhum dado válido encontrado nos novos arquivos")
 
 # ===== FUNÇÃO PRINCIPAL DE CARREGAMENTO =====
 
 @st.cache_data(ttl=300)
 def carregar_dados_google_drive():
-    """Carrega dados do Google Drive com cache e verificação automática de novos arquivos"""
-    # Verificar se precisamos recarregar (a cada 5 minutos ou quando solicitado)
     recarregar = False
     
     if "df_dados" not in st.session_state:
         recarregar = True
         st.session_state.primeira_carga = True
     elif "ultima_verificacao" in st.session_state:
-        # Verificar a cada 5 minutos (300 segundos)
         tempo_desde_ultima_verificacao = (dt.now() - st.session_state.ultima_verificacao).total_seconds()
         if tempo_desde_ultima_verificacao > 300:
             recarregar = True
@@ -638,22 +579,19 @@ def carregar_dados_google_drive():
         recarregar = True
     
     if recarregar:
-        # Autenticar
         creds = authenticate_google_drive()
         if not creds:
-            st.error("❌ Não foi possível autenticar com o Google Drive")
+            st.session_state.error_messages.append("❌ Não foi possível autenticar com o Google Drive")
             return pd.DataFrame()
         
         service = build('drive', 'v3', credentials=creds)
         
-        # Listar arquivos na pasta 'pedidos'
         files = list_drive_files(service, FOLDER_ID)
         
         if not files:
-            st.warning("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
+            st.session_state.error_messages.append("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
             return pd.DataFrame()
         
-        # Verificar se há novos arquivos
         novos_arquivos = False
         if "arquivos_info" in st.session_state:
             arquivos_atuais = {f['id']: f['modifiedTime'] for f in files}
@@ -664,12 +602,10 @@ def carregar_dados_google_drive():
         else:
             novos_arquivos = True
         
-        # Se não há novos arquivos e não é a primeira carga, retornar dados do cache
         if not novos_arquivos and not st.session_state.get('primeira_carga', False):
             st.session_state.ultima_verificacao = dt.now()
             return st.session_state.df_dados
         
-        # Mostrar progresso
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -677,17 +613,12 @@ def carregar_dados_google_drive():
             status_text.text(message)
             progress_bar.progress(len(files) / len(files))
         
-        # Processar arquivos em paralelo
         all_data = process_files_in_parallel(service, files, max_workers=5, progress_callback=progress_callback)
         
-        # Combinar todos os dados
         if all_data:
             final_df = pd.concat(all_data, ignore_index=True)
-            
-            # Remover duplicatas
             final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
             
-            # Salvar em cache
             st.session_state.df_dados = final_df
             st.session_state.arquivos_info = files
             st.session_state.ultima_atualizacao = dt.now()
@@ -696,47 +627,38 @@ def carregar_dados_google_drive():
             
             return final_df
         else:
-            st.warning("⚠️ Nenhum dado válido encontrado")
+            st.session_state.error_messages.append("⚠️ Nenhum dado válido encontrado")
             return pd.DataFrame()
     else:
-        # Retornar dados do cache
         return st.session_state.df_dados
 
 # ===== FUNÇÃO DE DETECÇÃO AUTOMÁTICA =====
 
 def auto_check_new_files():
-    """Função que verifica automaticamente novos arquivos a cada 5 minutos"""
     while not stop_event.is_set():
         try:
-            # Verificar se já sincronizou recentemente (menos de 5 minutos)
             if "ultima_verificacao" in st.session_state:
                 tempo_desde_ultima_verificacao = (dt.now() - st.session_state.ultima_verificacao).total_seconds()
-                if tempo_desde_ultima_verificacao >= 300:  # 5 minutos
-                    # Adicionar à fila de processamento
+                if tempo_desde_ultima_verificacao >= 300:
                     processing_queue.put("check_new_files")
             
-            # Aguardar 1 minuto antes da próxima verificação
             time.sleep(60)
         except Exception as e:
             print(f"Erro na verificação automática: {e}")
             time.sleep(60)
 
 def process_queue():
-    """Processa a fila de tarefas em segundo plano"""
     while not stop_event.is_set():
         try:
-            # Obter tarefa da fila (com timeout de 1 segundo)
             task = processing_queue.get(timeout=1)
             
             if task == "check_new_files":
-                # Executar verificação de novos arquivos
                 creds = authenticate_google_drive()
                 if creds:
                     service = build('drive', 'v3', credentials=creds)
                     files = list_drive_files(service, FOLDER_ID)
                     
                     if files:
-                        # Verificar se há arquivos novos ou modificados
                         novos_arquivos = []
                         arquivos_atuais = {f['id']: f['modifiedTime'] for f in files}
                         
@@ -745,82 +667,64 @@ def process_queue():
                             
                             for file_id, modified_time in arquivos_atuais.items():
                                 if file_id not in arquivos_cache or arquivos_cache[file_id] != modified_time:
-                                    # Encontrar o arquivo completo
                                     for file_info in files:
                                         if file_info['id'] == file_id:
                                             novos_arquivos.append(file_info)
                                             break
                         else:
-                            # Primeira carga - processar todos os arquivos
                             novos_arquivos = files
                         
                         if novos_arquivos:
-                            # Processar arquivos em paralelo
                             all_data = process_files_in_parallel(service, novos_arquivos, max_workers=5)
                             
-                            # Se temos dados novos, atualizar o DataFrame
                             if all_data:
-                                # Combinar dados novos com os existentes
                                 if "df_dados" in st.session_state:
                                     df_existente = st.session_state.df_dados
                                     
-                                    # Remover pedidos que possam estar nos arquivos novos
                                     arquivos_novos_nomes = [f['name'] for f in novos_arquivos]
                                     df_filtrado = df_existente[~df_existente['Arquivo Origem'].isin(arquivos_novos_nomes)]
                                     
-                                    # Combinar com os novos dados
                                     df_novos = pd.concat(all_data, ignore_index=True)
                                     final_df = pd.concat([df_filtrado, df_novos], ignore_index=True)
                                 else:
-                                    # Primeira carga
                                     final_df = pd.concat(all_data, ignore_index=True)
                                 
-                                # Remover duplicatas
                                 final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
                                 
-                                # Salvar em cache
                                 st.session_state.df_dados = final_df
                                 st.session_state.arquivos_info = files
                                 st.session_state.ultima_atualizacao = dt.now()
                                 st.session_state.ultima_verificacao = dt.now()
                                 st.session_state.primeira_carga = False
                                 
-                                # Notificar o usuário
-                                st.toast(f"✅ {len(novos_arquivos)} novos arquivos processados automaticamente!", icon="✅")
+                                st.session_state.toast_messages.append(f"✅ {len(novos_arquivos)} novos arquivos processados automaticamente!")
             
-            # Marcar tarefa como concluída
             processing_queue.task_done()
         except Exception as e:
             print(f"Erro ao processar fila: {e}")
 
 # ===== CONFIGURAÇÃO INICIAL =====
 
-# Iniciar threads em segundo plano
 auto_check_thread = threading.Thread(target=auto_check_new_files, daemon=True)
 process_queue_thread = threading.Thread(target=process_queue, daemon=True)
 
 auto_check_thread.start()
 process_queue_thread.start()
 
-# Carregar arquivos de estados e municípios
 try:
     estados_df = pd.read_csv("estados.csv")
     municipios_df = pd.read_csv("municipios.csv")
     
-    # Preparar dados de municípios para busca eficiente
     municipios_df["nome_normalizado"] = municipios_df["nome"].apply(normalize_text)
     city_list = municipios_df["nome_normalizado"].tolist()
     
-    # Normalizar estados para matching
     estados_df["uf_normalizado"] = estados_df["uf"].apply(normalize_text)
 except Exception as e:
-    st.error(f"Erro ao carregar arquivos de referência: {e}")
+    st.session_state.error_messages.append(f"Erro ao carregar arquivos de referência: {e}")
     st.stop()
 
-# Streamlit config
 st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
 
-# Estilo CSS com cores Castor
 st.markdown("""
     <style>
         body { 
@@ -1014,11 +918,9 @@ st.markdown("""
 
 st.sidebar.title("📊 MENU DE SINCRONIZAÇÃO")
 
-# Status da sincronização com Google Drive
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
 st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE - PASTA 'PEDIDOS'")
 
-# Adicionar controle para limitar o número de arquivos processados
 st.sidebar.markdown("### ⚙️ CONFIGURAÇÕES DE PROCESSAMENTO")
 limitar_arquivos = st.sidebar.checkbox("Limitar número de arquivos", value=False)
 max_arquivos = 100
@@ -1032,7 +934,6 @@ if limitar_arquivos:
         step=50
     )
 
-# Adicionar controle para processamento paralelo
 st.sidebar.markdown("### ⚡ OTIMIZAÇÃO")
 processamento_paralelo = st.sidebar.checkbox("Processamento paralelo", value=True)
 num_workers = st.sidebar.number_input(
@@ -1043,11 +944,9 @@ num_workers = st.sidebar.number_input(
     step=1
 )
 
-# Adicionar controle para detecção automática
 st.sidebar.markdown("### 🔄 DETECÇÃO AUTOMÁTICA")
 auto_detect = st.sidebar.checkbox("Verificar novos arquivos automaticamente", value=True)
 
-# Carregar dados
 df = carregar_dados_google_drive()
 
 if not df.empty:
@@ -1062,7 +961,6 @@ else:
 
 st.sidebar.markdown('</div>', unsafe_allow_html=True)
 
-# Botões de recarregar e verificar novos arquivos
 col1, col2 = st.sidebar.columns(2)
 with col1:
     if st.button("🔄 Recarregar Dados"):
@@ -1071,39 +969,43 @@ with col2:
     if st.button("🔍 Verificar Novos"):
         check_new_files()
 
-# Separador visual
 st.sidebar.markdown("---")
+
+# Exibir mensagens de erro
+if st.session_state.error_messages:
+    for error_msg in st.session_state.error_messages:
+        st.error(error_msg)
+    st.session_state.error_messages = []
+
+# Exibir mensagens de toast
+if st.session_state.toast_messages:
+    for toast_msg in st.session_state.toast_messages:
+        st.toast(toast_msg)
+    st.session_state.toast_messages = []
 
 # ===== CONTEÚDO PRINCIPAL =====
 
 if not df.empty:
-    # Processar dados
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
     df["Valor Total Z19-Z24"] = pd.to_numeric(df["Valor Total Z19-Z24"], errors="coerce")
     df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce")
     df["Período_Mês"] = df["Data"].dt.to_period("M")
     df = df.dropna(subset=["Data"])
     
-    # Obter anos disponíveis
     anos_disponiveis = sorted(df["Data"].dt.year.unique())
     
-    # Obter mês atual como padrão
     hoje = dt.now()
     mes_atual = hoje.month
     ano_atual = hoje.year
     
-    # Criar abas no topo
     tab1, tab2, tab3 = st.tabs(["Desempenho Individual", "Análise de Clientes", "Cálculo de Meta"])
     
     with tab1:
-        # FILTRO DOS GRÁFICOS
         st.markdown('<div class="filtro-topo">', unsafe_allow_html=True)
         st.markdown("### 📅 FILTRO DOS GRÁFICOS")
         
-        # Criar colunas para os filtros
         col_ano, col_mes = st.columns(2)
         
-        # Filtro de ano
         with col_ano:
             ano_selecionado = st.selectbox(
                 "Ano", 
@@ -1112,14 +1014,12 @@ if not df.empty:
                 key="ano_selecionado"
             )
         
-        # Filtro de mês
         with col_mes:
             if ano_selecionado:
                 meses_disponiveis = sorted(df[df["Data"].dt.year == ano_selecionado]["Data"].dt.month.unique())
             else:
                 meses_disponiveis = sorted(df["Data"].dt.month.unique())
             
-            # Mapear números de mês para nomes completos
             nomes_meses = [calendar.month_name[mes] for mes in meses_disponiveis]
             
             if mes_atual in meses_disponiveis and ano_selecionado == ano_atual:
@@ -1134,26 +1034,21 @@ if not df.empty:
                 key="mes_selecionado"
             )
             
-            # Converter nome do mês para número
             mes_selecionado_num = list(calendar.month_name).index(mes_selecionado)
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Filtrar dados para o período selecionado
         inicio_periodo_local = dt(ano_selecionado, mes_selecionado_num, 26).replace(hour=0, minute=0, second=0)
         fim_periodo_local = (inicio_periodo_local + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
         df_desempenho_local = df[(df["Data"] >= inicio_periodo_local) & (df["Data"] <= fim_periodo_local)].copy()
         
-        # Gráficos
         col_d1_full, = st.columns([4])
         with col_d1_full:
-            # Vendas por Dia
             vendas_dia = df_desempenho_local.groupby(df_desempenho_local["Data"].dt.date)["Valor Total Z19-Z24"].sum().reset_index()
             fig_dia = px.bar(vendas_dia, x="Data", y="Valor Total Z19-Z24", template="plotly_dark", color_discrete_sequence=["#FF8C00"])
             fig_dia.update_layout(xaxis_title="Data", yaxis_title="Valor Total (R$)", font=dict(size=10), margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_dia, width="stretch")
             
-            # Comparação de Vendas: Ano Atual vs Ano Anterior
             inicio_atual = dt(ano_selecionado, mes_selecionado_num, 26).replace(hour=0, minute=0, second=0)
             fim_atual = (inicio_atual + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
             inicio_anterior = inicio_atual - relativedelta(years=1)
@@ -1183,7 +1078,6 @@ if not df.empty:
             )
             st.plotly_chart(fig_comparacao_ano, width="stretch")
             
-            # Comparação de Vendas: Mês Atual vs Mês Anterior
             if mes_selecionado_num > 1:
                 inicio_mes_anterior = dt(ano_selecionado, mes_selecionado_num - 1, 26).replace(hour=0, minute=0, second=0)
                 fim_mes_anterior = (inicio_mes_anterior + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
@@ -1206,10 +1100,8 @@ if not df.empty:
                 )
                 st.plotly_chart(fig_comparacao_mes, width="stretch")
         
-        # Segundo bloco de gráficos
         col_d2_full, = st.columns([4])
         with col_d2_full:
-            # Top 10 Produtos Mais Vendidos
             df_periodo = df_desempenho_local.copy()
             df_periodo = df_periodo[df_periodo["Quantidade"] > 0].copy()
             df_periodo["Produto"] = df_periodo["Produto"].str.strip().str.upper()
@@ -1228,7 +1120,6 @@ if not df.empty:
             )
             st.plotly_chart(fig_top_produtos, width="stretch")
             
-            # Vendas por Categoria
             df_desempenho_local["Categoria"] = df_desempenho_local["Produto"].apply(classificar_produto)
             vendas_categoria = df_desempenho_local.groupby("Categoria")["Valor Total Z19-Z24"].sum().reset_index()
             categorias_completas = pd.DataFrame({"Categoria": ["KITS AR", "KITS ROSCA", "PEÇAS AVULSAS"]})
@@ -1246,9 +1137,7 @@ if not df.empty:
             )
             st.plotly_chart(fig_categoria, width="stretch")
             
-            # Botão para mostrar tabela de pedidos
             if st.button("Mostrar Tabela de Pedidos da Meta Atual"):
-                # Calcular período da meta para a aba atual
                 if mes_selecionado_num == 1:
                     inicio_meta = dt(ano_selecionado - 1, 12, 26).replace(hour=0, minute=0, second=0)
                     fim_meta = dt(ano_selecionado, 1, 25).replace(hour=23, minute=59, second=59)
@@ -1269,12 +1158,10 @@ if not df.empty:
                     st.warning("Não há pedidos no período da meta atual.")
     
     with tab2:
-        # Análise de Clientes
         df_lojistas_recuperar = identificar_lojistas_recuperar(df)
         
         col_mapa1, col_mapa2 = st.columns([1, 1])
         
-        # Mapa 1: Todos os clientes
         with col_mapa1:
             df_mapa = df.copy()
             df_mapa["Cidade"] = df_mapa["Cidade"].str.strip()
@@ -1368,7 +1255,6 @@ if not df.empty:
             else:
                 st.warning("Nenhum dado de localização válido após aplicar os filtros.")
         
-        # Mapa 2: Lojistas a Recuperar
         with col_mapa2:
             if not df_lojistas_recuperar.empty:
                 df_recuperar_mapa = df_lojistas_recuperar.copy()
@@ -1451,7 +1337,6 @@ if not df.empty:
             else:
                 st.info("Não há lojistas a recuperar no momento. Lojistas a recuperar são aqueles com mais de 3 pedidos e mais de 3 meses sem comprar.")
         
-        # Gráficos de pizza
         st.subheader("Análise de Distribuição Geográfica")
         
         regioes_dict = {
@@ -1501,7 +1386,6 @@ if not df.empty:
             )
             st.plotly_chart(fig_estado, width="stretch")
         
-        # Gráfico de barras
         st.subheader("Análise de Lojistas por Valor Total de Compras")
         
         estados_unicos = sorted(df['Estado'].unique())
@@ -1539,22 +1423,17 @@ if not df.empty:
         
         st.plotly_chart(fig_lojistas, width="stretch")
         
-        # Tabela
         st.subheader("Dados Detalhados dos Lojistas")
         st.dataframe(top_lojistas.style.format({'Valor Total Z19-Z24': 'R$ {:,.2f}'}), width="stretch")
     
     with tab3:
-        # Cálculo de Meta
         st.subheader("CÁLCULO DE META")
         
-        # FILTRO DE PERÍODO DA META
         st.markdown('<div class="filtro-topo">', unsafe_allow_html=True)
         st.markdown("### 📅 FILTRO DE PERÍODO DA META")
         
-        # Criar colunas para os filtros
         col_ano, col_mes = st.columns(2)
         
-        # Filtro de ano
         with col_ano:
             ano_meta = st.selectbox(
                 "Ano", 
@@ -1563,14 +1442,12 @@ if not df.empty:
                 key="ano_meta"
             )
         
-        # Filtro de mês
         with col_mes:
             if ano_meta:
                 meses_disponiveis = sorted(df[df["Data"].dt.year == ano_meta]["Data"].dt.month.unique())
             else:
                 meses_disponiveis = sorted(df["Data"].dt.month.unique())
             
-            # Mapear números de mês para nomes completos
             nomes_meses = [calendar.month_name[mes] for mes in meses_disponiveis]
             
             if mes_atual in meses_disponiveis and ano_meta == ano_atual:
@@ -1585,12 +1462,10 @@ if not df.empty:
                 key="mes_meta"
             )
             
-            # Converter nome do mês para número
             mes_meta_num = list(calendar.month_name).index(mes_meta)
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Calcular período da meta com base nos filtros
         if mes_meta_num == 1:
             inicio_meta = dt(ano_meta - 1, 12, 26).replace(hour=0, minute=0, second=0)
             fim_meta = dt(ano_meta, 1, 25).replace(hour=23, minute=59, second=59)
@@ -1598,14 +1473,11 @@ if not df.empty:
             inicio_meta = dt(ano_meta, mes_meta_num - 1, 26).replace(hour=0, minute=0, second=0)
             fim_meta = dt(ano_meta, mes_meta_num, 25).replace(hour=23, minute=59, second=59)
         
-        # Filtrar dados para o período da meta
         df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
         
-        # Calcular valor total vendido sem duplicatas
         df_meta_sem_duplicatas = df_meta.drop_duplicates(subset=['Número do Pedido'])
         valor_total_vendido = df_meta_sem_duplicatas["Valor Total Z19-Z24"].sum() if not df_meta_sem_duplicatas.empty else 0
         
-        # Calcular estatísticas
         total_pedidos = len(df_meta)
         pedidos_unicos = len(df_meta_sem_duplicatas)
         duplicatas = total_pedidos - pedidos_unicos
@@ -1614,68 +1486,54 @@ if not df.empty:
         percentual_meta = min(1.0, valor_total_vendido / meta_total)
         valor_restante = max(0, meta_total - valor_total_vendido)
         
-        # Exibir meta mensal
         st.subheader(f"META MENSAL PERÍODO: {inicio_meta.strftime('%d/%m/%Y')} A {fim_meta.strftime('%d/%m/%Y')}")
         st.markdown("<hr style='border: 1px solid #4A4A4A;'>", unsafe_allow_html=True)
         
         st.progress(percentual_meta, text=f"Progresso da Meta: {percentual_meta*100:.1f}%")
         st.caption(f"Número de pedidos processados: {total_pedidos} | Pedidos únicos: {pedidos_unicos} | Duplicatas: {duplicatas}")
         
-        # Primeira linha de métricas
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Vendido (Z19-Z24)", f"R$ {valor_total_vendido:,.2f}")
         col2.metric("Meta", f"R$ {meta_total:,.2f}")
         col3.metric("Restante", f"R$ {valor_restante:,.2f}")
         
-        # Calcular os novos campos
         hoje = dt.now().date()
         
-        # Verificar se hoje está dentro do período da meta
         if hoje < inicio_meta.date():
-            # Ainda não começou o período da meta
             dias_uteis_faltantes = 0
             valor_esperado = 0
             valor_diario_necessario = 0
             cor_valor_esperado = "black"
         elif hoje > fim_meta.date():
-            # O período da meta já terminou
             dias_uteis_faltantes = 0
             valor_esperado = meta_total
             valor_diario_necessario = 0
             cor_valor_esperado = "black"
         else:
-            # Calcular dias úteis no período da meta
             cal = Brazil()
             dias_uteis_total = cal.get_working_days_delta(inicio_meta.date(), fim_meta.date())
             
-            # Calcular dias úteis já passados
             dias_uteis_passados = cal.get_working_days_delta(inicio_meta.date(), hoje)
             
-            # Calcular dias úteis faltantes
             dias_uteis_faltantes = dias_uteis_total - dias_uteis_passados
             
-            # Calcular valor esperado até hoje
             if dias_uteis_total > 0:
                 valor_esperado = (dias_uteis_passados / dias_uteis_total) * meta_total
             else:
                 valor_esperado = meta_total
             
-            # Calcular valor diário necessário
             if dias_uteis_faltantes > 0:
                 valor_diario_necessario = (meta_total - valor_total_vendido) / dias_uteis_faltantes
             else:
                 valor_diario_necessario = 0
             
-            # Definir cor do valor esperado
             if valor_total_vendido < valor_esperado:
-                cor_valor_esperado = "#FF4444"  # Vermelho
+                cor_valor_esperado = "#FF4444"
             else:
-                cor_valor_esperado = "#4A90E2"  # Azul
+                cor_valor_esperado = "#4A90E2"
         
-        # Segunda linha de métricas (novos campos)
         col4, col5, col6 = st.columns(3)
         
-        # Campo "Quanto deveria estar"
         with col4:
             st.markdown("### Quanto deveria estar")
             if cor_valor_esperado == "#FF4444":
@@ -1685,12 +1543,10 @@ if not df.empty:
             else:
                 st.markdown(f"R$ {valor_esperado:,.2f}")
         
-        # Campo "Dias Úteis Faltantes"
         with col5:
             st.markdown("### Dias Úteis Faltantes")
             st.markdown(f"{dias_uteis_faltantes} dias")
         
-        # Campo "Quanto deve vender por dia"
         with col6:
             st.markdown("### Quanto deve vender por dia")
             st.markdown(f"R$ {valor_diario_necessario:,.2f}")
@@ -1725,8 +1581,6 @@ if not df.empty:
 else:
     st.warning("⚠️ Nenhum dado disponível. Verifique a configuração do Google Drive.")
 
-# Créditos
 st.markdown('<div class="creditos">developed by @joao_vendascastor</div>', unsafe_allow_html=True)
 
-# Parar threads quando o aplicativo for fechado
 stop_event.set()
