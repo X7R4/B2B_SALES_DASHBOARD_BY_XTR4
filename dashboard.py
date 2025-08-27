@@ -1393,10 +1393,6 @@ if not df.empty:
         
         resultados, valor_total_vendido, meta_atingida = calcular_comissoes_e_bonus(df, inicio_meta, fim_meta)
         
-        col_info1, col_info2 = st.columns(2)
-        col_info1.metric("Valor Total Vendido", f"R$ {valor_total_vendido:,.2f}")
-        col_info2.metric("Meta Mensal Atingida", "Sim" if meta_atingida else "Não")
-        
         st.subheader("Detalhamento dos Cálculos")
         st.dataframe(resultados.style.format({'Valor (R$)': 'R$ {:,.2f}'}), width="stretch")
         
