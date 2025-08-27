@@ -24,8 +24,8 @@ from googleapiclient.http import MediaIoBaseDownload
 import io
 
 # ===== CONFIGURAÇÃO =====
-# Substitua pelo ID da sua pasta no Google Drive
-FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # ALTERE ESTE VALOR!
+# ID da pasta "pedidos" no Google Drive
+FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # ALTERE ESTE VALOR PARA O ID DA PASTA "pedidos"
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
 # Variável global para controle de sincronização
@@ -421,7 +421,7 @@ def refresh_drive_data():
     st.rerun()
 
 def check_new_files():
-    """Verifica e processa apenas arquivos novos no Google Drive"""
+    """Verifica e processa apenas arquivos novos na pasta 'pedidos' do Google Drive"""
     # Autenticar
     creds = authenticate_google_drive()
     if not creds:
@@ -430,11 +430,11 @@ def check_new_files():
     
     service = build('drive', 'v3', credentials=creds)
     
-    # Listar arquivos atuais
+    # Listar arquivos atuais na pasta 'pedidos'
     files = list_drive_files(service, FOLDER_ID)
     
     if not files:
-        st.warning("⚠️ Nenhum arquivo encontrado na pasta do Google Drive")
+        st.warning("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
         return
     
     # Verificar se há arquivos novos ou modificados
@@ -456,9 +456,14 @@ def check_new_files():
         novos_arquivos = files
     
     if not novos_arquivos:
-        st.success("✅ Nenhum novo arquivo encontrado")
+        st.success("✅ Nenhum novo arquivo encontrado na pasta 'pedidos'")
         st.session_state.ultima_verificacao = dt.now()
         return
+    
+    # Mostrar lista de novos arquivos encontrados
+    st.subheader(f"📁 {len(novos_arquivos)} novos arquivos encontrados na pasta 'pedidos':")
+    for file_info in novos_arquivos:
+        st.write(f"- {file_info['name']} (Modificado: {file_info['modifiedTime']})")
     
     # Mostrar progresso
     progress_bar = st.progress(0)
@@ -539,11 +544,11 @@ def carregar_dados_google_drive():
         
         service = build('drive', 'v3', credentials=creds)
         
-        # Listar arquivos
+        # Listar arquivos na pasta 'pedidos'
         files = list_drive_files(service, FOLDER_ID)
         
         if not files:
-            st.warning("⚠️ Nenhum arquivo encontrado na pasta do Google Drive")
+            st.warning("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
             return pd.DataFrame()
         
         # Verificar se há novos arquivos
@@ -819,7 +824,7 @@ st.sidebar.title("📊 MENU DE SINCRONIZAÇÃO")
 
 # Status da sincronização com Google Drive
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
-st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE")
+st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE - PASTA 'PEDIDOS'")
 
 # Carregar dados
 df = carregar_dados_google_drive()
@@ -827,7 +832,7 @@ df = carregar_dados_google_drive()
 if not df.empty:
     st.sidebar.success("✅ Conectado ao Google Drive")
     if "arquivos_info" in st.session_state:
-        st.sidebar.caption(f"📁 {len(st.session_state.arquivos_info)} arquivos Excel")
+        st.sidebar.caption(f"📁 {len(st.session_state.arquivos_info)} arquivos Excel na pasta 'pedidos'")
         if "ultima_atualizacao" in st.session_state:
             st.sidebar.caption(f"🕒 Última atualização: {st.session_state.ultima_atualizacao.strftime('%d/%m/%Y %H:%M')}")
 else:
