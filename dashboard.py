@@ -28,7 +28,7 @@ FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # ALTERE ESTE VALOR!
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
 # Configurar credenciais do Service Account
-SERVICE_ACCOUNT_FILE = 'dashboard-470221-497b6659fe89.json'  # ALTERE ESTE VALOR!
+SERVICE_ACCOUNT_FILE = 'dashboard-470221-8614f5475bc8.json'  # ALTERE ESTE VALOR!
 
 # ===== FUNÇÕES DO GOOGLE DRIVE =====
 
