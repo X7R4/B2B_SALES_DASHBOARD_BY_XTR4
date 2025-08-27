@@ -739,7 +739,6 @@ with col2:
         check_new_files()
 
 # Separador visual
-st.sidebar.markdown("---")
 
 # ===== CONTEÚDO PRINCIPAL =====
 
@@ -758,10 +757,6 @@ if not df.empty:
     hoje = dt.now()
     mes_atual = hoje.month
     ano_atual = hoje.year
-    
-    # FILTRO DE PERÍODO DA META
-    st.markdown('<div class="filtro-topo">', unsafe_allow_html=True)
-    st.markdown("### 📅 FILTRO DE PERÍODO DA META")
     
     # Criar colunas para os filtros
     col_ano, col_mes = st.columns(2)
