@@ -622,42 +622,140 @@ except Exception as e:
 # Streamlit config
 st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
 
-# Estilo CSS
+# Estilo CSS com cores Castor
 st.markdown("""
     <style>
-        body { background: linear-gradient(135deg, #1A1A2E, #16213E); color: #E0E0E0; font-family: 'Helvetica Neue', Arial, sans-serif; margin: 0; padding: 0; height: 100vh; width: 100vw; overflow-x: hidden; }
-        .stProgress > div > div > div > div { background: linear-gradient(90deg, #4A90E2, #50E3C2); }
-        .stSelectbox, .stMultiselect { background-color: #2A2A3D; border: 1px solid #3A3A52; border-radius: 8px; color: #E0E0E0; box-shadow: 0 2px 4px rgba(0,0,0,0.2); width: 100%; padding: 8px; }
-        .stMetric { background: linear-gradient(135deg, #2A2A3D, #1E1E2E); border: 1px solid #3A3A52; border-radius: 8px; padding: 15px; color: #E0E0E0; box-shadow: 0 2px 6px rgba(0,0,0,0.3); text-align: center; width: 100%; }
-        .section { padding: 25px; margin-bottom: 25px; border-radius: 10px; background: linear-gradient(135deg, #2A2A3D, #1E1E2E); border: 1px solid #3A3A52; box-shadow: 0 4px 12px rgba(0,0,0,0.3); width: 100%; }
-        h1, h2, h3 { color: #4A90E2; font-weight: 500; text-transform: uppercase; letter-spacing: 1px; }
-        .stApp { padding: 30px; height: 100%; width: 100%; box-sizing: border-box; }
-        .stCaption { color: #B0B0B0; font-size: 0.9em; }
-        .css-1aumxhk { width: 100% !important; min-width: 0 !important; }
-        .css-1d391kg { width: 100% !important; min-width: 0 !important; }
-        .stPlotlyChart { width: 100% !important; height: auto !important; }
-        .stSpinner { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; z-index: 1000; width: auto; height: auto; }
-        .stTabs [data-baseweb="tab-list"] { background: linear-gradient(135deg, #2A2A3D, #1E1E2E); border-bottom: 1px solid #3A3A52; padding: 0 10px; display: flex; justify-content: center; }
-        .stTabs [data-baseweb="tab"] { background-color: #2A2A3D; color: #E0E0E0; padding: 10px 20px; margin: 0 5px; border: 1px solid #3A3A52; border-bottom: none; border-radius: 5px 5px 0 0; cursor: pointer; transition: background-color 0.3s; }
-        .stTabs [data-baseweb="tab"]:hover { background-color: #3A3A52; }
-        .stTabs [data-baseweb="tab"][aria-selected="true"] { background-color: #1E1E2E; color: #4A90E2; font-weight: bold; }
-        .filter-container { display: flex; gap: 15px; align-items: center; }
-        .filter-label { font-weight: 500; color: #4A90E2; margin-right: 10px; }
+        body { 
+            background: linear-gradient(135deg, #2C2C2C, #1A1A1A); 
+            color: #E0E0E0; 
+            font-family: 'Helvetica Neue', Arial, sans-serif; 
+            margin: 0; 
+            padding: 0; 
+            height: 100vh; 
+            width: 100vw; 
+            overflow-x: hidden; 
+        }
+        .stProgress > div > div > div > div { 
+            background: linear-gradient(90deg, #FF8C00, #FFA500); 
+        }
+        .stSelectbox, .stMultiselect { 
+            background-color: #3A3A3A; 
+            border: 1px solid #4A4A4A; 
+            border-radius: 8px; 
+            color: #E0E0E0; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2); 
+            width: 100%; 
+            padding: 8px; 
+        }
+        .stMetric { 
+            background: linear-gradient(135deg, #3A3A3A, #2A2A2A); 
+            border: 1px solid #4A4A4A; 
+            border-radius: 8px; 
+            padding: 15px; 
+            color: #E0E0E0; 
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3); 
+            text-align: center; 
+            width: 100%; 
+        }
+        .section { 
+            padding: 25px; 
+            margin-bottom: 25px; 
+            border-radius: 10px; 
+            background: linear-gradient(135deg, #3A3A3A, #2A2A2A); 
+            border: 1px solid #4A4A4A; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3); 
+            width: 100%; 
+        }
+        h1, h2, h3 { 
+            color: #FF8C00; 
+            font-weight: 500; 
+            text-transform: uppercase; 
+            letter-spacing: 1px; 
+        }
+        .stApp { 
+            padding: 30px; 
+            height: 100%; 
+            width: 100%; 
+            box-sizing: border-box; 
+        }
+        .stCaption { 
+            color: #B0B0B0; 
+            font-size: 0.9em; 
+        }
+        .css-1aumxhk { 
+            width: 100% !important; 
+            min-width: 0 !important; 
+        }
+        .css-1d391kg { 
+            width: 100% !important; 
+            min-width: 0 !important; 
+        }
+        .stPlotlyChart { 
+            width: 100% !important; 
+            height: auto !important; 
+        }
+        .stSpinner { 
+            position: fixed; 
+            top: 50%; 
+            left: 50%; 
+            transform: translate(-50%, -50%); 
+            text-align: center; 
+            z-index: 1000; 
+            width: auto; 
+            height: auto; 
+        }
+        .stTabs [data-baseweb="tab-list"] { 
+            background: linear-gradient(135deg, #3A3A3A, #2A2A2A); 
+            border-bottom: 1px solid #4A4A4A; 
+            padding: 0 10px; 
+            display: flex; 
+            justify-content: center; 
+            margin-bottom: 20px;
+        }
+        .stTabs [data-baseweb="tab"] { 
+            background-color: #3A3A3A; 
+            color: #E0E0E0; 
+            padding: 10px 20px; 
+            margin: 0 5px; 
+            border: 1px solid #4A4A4A; 
+            border-bottom: none; 
+            border-radius: 5px 5px 0 0; 
+            cursor: pointer; 
+            transition: background-color 0.3s; 
+        }
+        .stTabs [data-baseweb="tab"]:hover { 
+            background-color: #4A4A4A; 
+        }
+        .stTabs [data-baseweb="tab"][aria-selected="true"] { 
+            background-color: #2A2A2A; 
+            color: #FF8C00; 
+            font-weight: bold; 
+        }
+        .filter-container { 
+            display: flex; 
+            gap: 15px; 
+            align-items: center; 
+        }
+        .filter-label { 
+            font-weight: 500; 
+            color: #FF8C00; 
+            margin-right: 10px; 
+        }
         div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stPlotlyChart"]) {
             display: flex;
             justify-content: center;
         }
         .filtro-topo {
-            background: linear-gradient(135deg, #2A2A3D, #1E1E2E);
-            border: 1px solid #3A3A52;
+            background: linear-gradient(135deg, #3A3A3A, #2A2A2A);
+            border: 1px solid #4A4A4A;
             border-radius: 8px;
             padding: 15px;
             margin-bottom: 20px;
             box-shadow: 0 2px 6px rgba(0,0,0,0.3);
         }
         .ganhos-destaque {
-            background: linear-gradient(135deg, #2A2A3D, #1E1E2E);
-            border: 1px solid #3A3A52;
+            background: linear-gradient(135deg, #3A3A3A, #2A2A2A);
+            border: 1px solid #4A4A4A;
             border-radius: 8px;
             padding: 15px;
             margin-top: 20px;
@@ -667,19 +765,19 @@ st.markdown("""
         .ganhos-valor {
             font-size: 24px;
             font-weight: bold;
-            color: #50E3C2;
+            color: #FFA500;
             margin-top: 10px;
         }
         .status-sync {
-            background: linear-gradient(135deg, #2A2A3D, #1E1E2E);
-            border: 1px solid #3A3A52;
+            background: linear-gradient(135deg, #3A3A3A, #2A2A2A);
+            border: 1px solid #4A4A4A;
             border-radius: 8px;
             padding: 15px;
             margin-bottom: 20px;
             box-shadow: 0 2px 6px rgba(0,0,0,0.3);
         }
         .sync-button {
-            background: linear-gradient(90deg, #4A90E2, #50E3C2);
+            background: linear-gradient(90deg, #FF8C00, #FFA500);
             color: white;
             border: none;
             border-radius: 8px;
@@ -739,45 +837,9 @@ with col2:
         check_new_files()
 
 # Separador visual
+st.sidebar.markdown("---")
 
 # ===== CONTEÚDO PRINCIPAL =====
-
- 
-    # Calcular período da meta com base nos filtros
-    if mes_selecionado_num == 1:
-        inicio_meta = dt(ano_selecionado - 1, 12, 26).replace(hour=0, minute=0, second=0)
-        fim_meta = dt(ano_selecionado, 1, 25).replace(hour=23, minute=59, second=59)
-    else:
-        inicio_meta = dt(ano_selecionado, mes_selecionado_num - 1, 26).replace(hour=0, minute=0, second=0)
-        fim_meta = dt(ano_selecionado, mes_selecionado_num, 25).replace(hour=23, minute=59, second=59)
-    
-    # Filtrar dados para o período da meta
-    df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
-    
-    # Calcular valor total vendido sem duplicatas
-    df_meta_sem_duplicatas = df_meta.drop_duplicates(subset=['Número do Pedido'])
-    valor_total_vendido = df_meta_sem_duplicatas["Valor Total Z19-Z24"].sum() if not df_meta_sem_duplicatas.empty else 0
-    
-    # Calcular estatísticas
-    total_pedidos = len(df_meta)
-    pedidos_unicos = len(df_meta_sem_duplicatas)
-    duplicatas = total_pedidos - pedidos_unicos
-    
-    meta_total = 200_000
-    percentual_meta = min(1.0, valor_total_vendido / meta_total)
-    valor_restante = max(0, meta_total - valor_total_vendido)
-    
-    # Exibir meta mensal
-    st.subheader(f"META MENSAL PERÍODO: {inicio_meta.strftime('%d/%m/%Y')} A {fim_meta.strftime('%d/%m/%Y')}")
-    st.markdown("<hr style='border: 1px solid #3A3A52;'>", unsafe_allow_html=True)
-    
-    st.progress(percentual_meta, text=f"Progresso da Meta: {percentual_meta*100:.1f}%")
-    st.caption(f"Número de pedidos processados: {total_pedidos} | Pedidos únicos: {pedidos_unicos} | Duplicatas: {duplicatas}")
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Vendido (Z19-Z24)", f"R$ {valor_total_vendido:,.2f}")
-    col2.metric("Meta", f"R$ {meta_total:,.2f}")
-    col3.metric("Restante", f"R$ {valor_restante:,.2f}")
 
 if not df.empty:
     # Processar dados
@@ -795,72 +857,55 @@ if not df.empty:
     mes_atual = hoje.month
     ano_atual = hoje.year
     
-    # Criar colunas para os filtros
-    col_ano, col_mes = st.columns(2)
-    
-    # Filtro de ano
-    with col_ano:
-        ano_selecionado = st.selectbox(
-            "Ano", 
-            anos_disponiveis, 
-            index=len(anos_disponiveis)-1,
-            key="ano_selecionado"
-        )
-    
-    # Filtro de mês
-    with col_mes:
-        if ano_selecionado:
-            meses_disponiveis = sorted(df[df["Data"].dt.year == ano_selecionado]["Data"].dt.month.unique())
-        else:
-            meses_disponiveis = sorted(df["Data"].dt.month.unique())
-        
-        nomes_meses = [calendar.month_name[mes] for mes in meses_disponiveis]
-        
-        if mes_atual in meses_disponiveis and ano_selecionado == ano_atual:
-            indice_mes = meses_disponiveis.index(mes_atual)
-        else:
-            indice_mes = 0
-        
-        mes_selecionado = st.selectbox(
-            "Mês", 
-            nomes_meses, 
-            index=indice_mes,
-            key="mes_selecionado"
-        )
-        
-        mes_selecionado_num = meses_disponiveis[nomes_meses.index(mes_selecionado)]
-    
-    st.markdown('</div>', unsafe_allow_html=True)
-   
-    
-    # Criar abas
+    # Criar abas no topo
     tab1, tab2, tab3 = st.tabs(["Desempenho Individual", "Análise de Clientes", "Cálculo de Meta"])
     
     with tab1:
-        # Obter períodos de fechamento para o ano selecionado
-        periodos_fechamento = sorted(df[df["Data"].dt.year == ano_selecionado]["Data"].dt.to_period("M").apply(lambda x: f"{calendar.month_abbr[x.month]} / {x.year}").unique())
+        # FILTRO DOS GRÁFICOS
+        st.markdown('<div class="filtro-topo">', unsafe_allow_html=True)
+        st.markdown("### 📅 FILTRO DOS GRÁFICOS")
         
-        periodo_selecionado = f"{calendar.month_abbr[mes_selecionado_num]} / {ano_selecionado}"
+        # Criar colunas para os filtros
+        col_ano, col_mes = st.columns(2)
         
-        try:
-            if periodo_selecionado in periodos_fechamento:
-                indice_periodo = periodos_fechamento.index(periodo_selecionado)
+        # Filtro de ano
+        with col_ano:
+            ano_selecionado = st.selectbox(
+                "Ano", 
+                anos_disponiveis, 
+                index=len(anos_disponiveis)-1,
+                key="ano_selecionado"
+            )
+        
+        # Filtro de mês
+        with col_mes:
+            if ano_selecionado:
+                meses_disponiveis = sorted(df[df["Data"].dt.year == ano_selecionado]["Data"].dt.month.unique())
             else:
-                indice_periodo = 0
-        except:
-            indice_periodo = 0
+                meses_disponiveis = sorted(df["Data"].dt.month.unique())
+            
+            nomes_meses = [calendar.month_name[mes] for mes in meses_disponiveis]
+            
+            if mes_atual in meses_disponiveis and ano_selecionado == ano_atual:
+                indice_mes = meses_disponiveis.index(mes_atual)
+            else:
+                indice_mes = 0
+            
+            mes_selecionado = st.selectbox(
+                "Mês", 
+                nomes_meses, 
+                index=indice_mes,
+                key="mes_selecionado"
+            )
+            
+            mes_selecionado_num = meses_disponiveis[nomes_meses.index(mes_selecionado)]
         
-        periodo_selecionado_local = st.selectbox(
-            "Selecione o período", 
-            periodos_fechamento, 
-            index=indice_periodo,
-            key="local_periodo"
-        )
+        st.markdown('</div>', unsafe_allow_html=True)
         
         # Filtrar dados para o período selecionado
-        mes_ano = periodo_selecionado_local.split(" / ")
-        mes = list(calendar.month_abbr).index(mes_ano[0])
-        ano = int(mes_ano[1])
+        mes_ano = mes_selecionado.split(" / ") if "/" in mes_selecionado else [mes_selecionado]
+        mes = list(calendar.month_abbr).index(mes_ano[0]) if len(mes_ano) > 0 else mes_selecionado_num
+        ano = int(mes_ano[1]) if len(mes_ano) > 1 else ano_selecionado
         inicio_periodo_local = dt(ano, mes, 26).replace(hour=0, minute=0, second=0)
         fim_periodo_local = (inicio_periodo_local + relativedelta(months=1) - timedelta(days=1)).replace(hour=23, minute=59, second=59)
         df_desempenho_local = df[(df["Data"] >= inicio_periodo_local) & (df["Data"] <= fim_periodo_local)].copy()
@@ -870,7 +915,7 @@ if not df.empty:
         with col_d1_full:
             # Vendas por Dia
             vendas_dia = df_desempenho_local.groupby(df_desempenho_local["Data"].dt.date)["Valor Total Z19-Z24"].sum().reset_index()
-            fig_dia = px.bar(vendas_dia, x="Data", y="Valor Total Z19-Z24", template="plotly_dark", color_discrete_sequence=["#4A90E2"])
+            fig_dia = px.bar(vendas_dia, x="Data", y="Valor Total Z19-Z24", template="plotly_dark", color_discrete_sequence=["#FF8C00"])
             fig_dia.update_layout(xaxis_title="Data", yaxis_title="Valor Total (R$)", font=dict(size=10), margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_dia, width="stretch")
             
@@ -892,8 +937,8 @@ if not df.empty:
             vendas_anterior_week["Período"] = vendas_anterior_week["Semana"].apply(lambda x: f"Semana {x}")
             
             fig_comparacao_ano = go.Figure()
-            fig_comparacao_ano.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano}', line=dict(color='#4A90E2')))
-            fig_comparacao_ano.add_trace(go.Scatter(x=vendas_anterior_week["Período"], y=vendas_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano-1}', line=dict(color='#50E3C2')))
+            fig_comparacao_ano.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano}', line=dict(color='#FF8C00')))
+            fig_comparacao_ano.add_trace(go.Scatter(x=vendas_anterior_week["Período"], y=vendas_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano-1}', line=dict(color='#FFA500')))
             fig_comparacao_ano.update_layout(
                 template="plotly_dark",
                 xaxis_title="Semanas",
@@ -915,7 +960,7 @@ if not df.empty:
                 vendas_mes_anterior_week["Período"] = vendas_mes_anterior_week["Semana"].apply(lambda x: f"Semana {x}")
                 
                 fig_comparacao_mes = go.Figure()
-                fig_comparacao_mes.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[mes]} {ano}', line=dict(color='#4A90E2')))
+                fig_comparacao_mes.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[mes]} {ano}', line=dict(color='#FF8C00')))
                 fig_comparacao_mes.add_trace(go.Scatter(x=vendas_mes_anterior_week["Período"], y=vendas_mes_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{calendar.month_abbr[mes-1]} {ano}', line=dict(color='#E94F37')))
                 fig_comparacao_mes.update_layout(
                     template="plotly_dark",
@@ -939,7 +984,7 @@ if not df.empty:
             
             fig_top_produtos = px.bar(top_produtos, x="Produto", y="Quantidade", 
                                     title=f"Top 10 Produtos Mais Vendidos - {inicio_periodo_local.strftime('%d/%m/%Y')} a {fim_periodo_local.strftime('%d/%m/%Y')}",
-                                    template="plotly_dark", color_discrete_sequence=["#4A90E2"])
+                                    template="plotly_dark", color_discrete_sequence=["#FF8C00"])
             fig_top_produtos.update_layout(
                 xaxis_title="Produtos",
                 yaxis_title="Quantidade Vendida",
@@ -958,7 +1003,7 @@ if not df.empty:
             fig_categoria = px.pie(vendas_categoria, names="Categoria", values="Valor Total Z19-Z24",
                                  title=f"Vendas por Categoria - {inicio_periodo_local.strftime('%d/%m/%Y')} a {fim_periodo_local.strftime('%d/%m/%Y')}",
                                  template="plotly_dark",
-                                 color_discrete_sequence=["#50E3C2", "#4A90E2", "#E94F37"])
+                                 color_discrete_sequence=["#FFA500", "#FF8C00", "#E94F37"])
             fig_categoria.update_traces(textinfo="percent+label", textposition="inside")
             fig_categoria.update_layout(
                 font=dict(size=10),
@@ -969,6 +1014,14 @@ if not df.empty:
             
             # Botão para mostrar tabela de pedidos
             if st.button("Mostrar Tabela de Pedidos da Meta Atual"):
+                # Calcular período da meta para a aba atual
+                if mes_selecionado_num == 1:
+                    inicio_meta = dt(ano_selecionado - 1, 12, 26).replace(hour=0, minute=0, second=0)
+                    fim_meta = dt(ano_selecionado, 1, 25).replace(hour=23, minute=59, second=59)
+                else:
+                    inicio_meta = dt(ano_selecionado, mes_selecionado_num - 1, 26).replace(hour=0, minute=0, second=0)
+                    fim_meta = dt(ano_selecionado, mes_selecionado_num, 25).replace(hour=23, minute=59, second=59)
+                
                 tabela_pedidos = gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta)
                 if not tabela_pedidos.empty:
                     st.subheader(f"Tabela de Pedidos da Meta Atual ({inicio_meta.strftime('%d/%m/%Y')} a {fim_meta.strftime('%d/%m/%Y')})")
@@ -1050,7 +1103,7 @@ if not df.empty:
                         '<b>Última Compra</b>: %{customdata[4]}<br>'+
                         '<extra></extra>',
                         customdata=df_mapa[["Cliente", "Telefone", "Cidade", "Estado", "Ultima_Compra"]],
-                        marker=dict(size=7, color="#4A90E2", opacity=0.9,),
+                        marker=dict(size=7, color="#FF8C00", opacity=0.9,),
                     ))
                     fig_mapa.update_layout(
                         map_style="carto-darkmatter",
@@ -1185,7 +1238,7 @@ if not df.empty:
             
             fig_regiao = px.pie(clientes_regiao, names='Região', values='Número de Clientes',
                                template='plotly_dark',
-                               color_discrete_sequence=['#4A90E2', '#50E3C2', '#E94F37', '#F7DC6F', '#BB8FCE'])
+                               color_discrete_sequence=['#FF8C00', '#FFA500', '#E94F37', '#F7DC6F', '#BB8FCE'])
             fig_regiao.update_traces(textinfo='percent+label', textposition='inside')
             fig_regiao.update_layout(
                 font=dict(size=10),
@@ -1238,7 +1291,7 @@ if not df.empty:
                              y='Valor Total Z19-Z24',
                              title=titulo_grafico,
                              template='plotly_dark',
-                             color_discrete_sequence=['#4A90E2'])
+                             color_discrete_sequence=['#FF8C00'])
         
         fig_lojistas.update_layout(
             xaxis_title="Lojista",
@@ -1258,7 +1311,84 @@ if not df.empty:
     
     with tab3:
         # Cálculo de Meta
-        st.subheader(f"Cálculo de Comissões e Bônus - {inicio_meta.strftime('%d/%m/%Y')} a {fim_meta.strftime('%d/%m/%Y')}")
+        st.subheader("CÁLCULO DE META")
+        
+        # FILTRO DE PERÍODO DA META
+        st.markdown('<div class="filtro-topo">', unsafe_allow_html=True)
+        st.markdown("### 📅 FILTRO DE PERÍODO DA META")
+        
+        # Criar colunas para os filtros
+        col_ano, col_mes = st.columns(2)
+        
+        # Filtro de ano
+        with col_ano:
+            ano_meta = st.selectbox(
+                "Ano", 
+                anos_disponiveis, 
+                index=len(anos_disponiveis)-1,
+                key="ano_meta"
+            )
+        
+        # Filtro de mês
+        with col_mes:
+            if ano_meta:
+                meses_disponiveis = sorted(df[df["Data"].dt.year == ano_meta]["Data"].dt.month.unique())
+            else:
+                meses_disponiveis = sorted(df["Data"].dt.month.unique())
+            
+            nomes_meses = [calendar.month_name[mes] for mes in meses_disponiveis]
+            
+            if mes_atual in meses_disponiveis and ano_meta == ano_atual:
+                indice_mes = meses_disponiveis.index(mes_atual)
+            else:
+                indice_mes = 0
+            
+            mes_meta = st.selectbox(
+                "Mês", 
+                nomes_meses, 
+                index=indice_mes,
+                key="mes_meta"
+            )
+            
+            mes_meta_num = meses_disponiveis[nomes_meses.index(mes_meta)]
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Calcular período da meta com base nos filtros
+        if mes_meta_num == 1:
+            inicio_meta = dt(ano_meta - 1, 12, 26).replace(hour=0, minute=0, second=0)
+            fim_meta = dt(ano_meta, 1, 25).replace(hour=23, minute=59, second=59)
+        else:
+            inicio_meta = dt(ano_meta, mes_meta_num - 1, 26).replace(hour=0, minute=0, second=0)
+            fim_meta = dt(ano_meta, mes_meta_num, 25).replace(hour=23, minute=59, second=59)
+        
+        # Filtrar dados para o período da meta
+        df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
+        
+        # Calcular valor total vendido sem duplicatas
+        df_meta_sem_duplicatas = df_meta.drop_duplicates(subset=['Número do Pedido'])
+        valor_total_vendido = df_meta_sem_duplicatas["Valor Total Z19-Z24"].sum() if not df_meta_sem_duplicatas.empty else 0
+        
+        # Calcular estatísticas
+        total_pedidos = len(df_meta)
+        pedidos_unicos = len(df_meta_sem_duplicatas)
+        duplicatas = total_pedidos - pedidos_unicos
+        
+        meta_total = 200_000
+        percentual_meta = min(1.0, valor_total_vendido / meta_total)
+        valor_restante = max(0, meta_total - valor_total_vendido)
+        
+        # Exibir meta mensal
+        st.subheader(f"META MENSAL PERÍODO: {inicio_meta.strftime('%d/%m/%Y')} A {fim_meta.strftime('%d/%m/%Y')}")
+        st.markdown("<hr style='border: 1px solid #4A4A4A;'>", unsafe_allow_html=True)
+        
+        st.progress(percentual_meta, text=f"Progresso da Meta: {percentual_meta*100:.1f}%")
+        st.caption(f"Número de pedidos processados: {total_pedidos} | Pedidos únicos: {pedidos_unicos} | Duplicatas: {duplicatas}")
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Vendido (Z19-Z24)", f"R$ {valor_total_vendido:,.2f}")
+        col2.metric("Meta", f"R$ {meta_total:,.2f}")
+        col3.metric("Restante", f"R$ {valor_restante:,.2f}")
         
         resultados, valor_total_vendido, meta_atingida = calcular_comissoes_e_bonus(df, inicio_meta, fim_meta)
         
@@ -1289,4 +1419,7 @@ if not df.empty:
 else:
     st.warning("⚠️ Nenhum dado disponível. Verifique a configuração do Google Drive.")
 
+# Instruções no rodapé
+
+# Créditos
 st.markdown('<div class="creditos">developed by @joao_vendascastor</div>', unsafe_allow_html=True)
