@@ -27,7 +27,6 @@ from googleapiclient.http import MediaIoBaseDownload
 import io
 
 # ===== INICIALIZAÇÃO DO SESSION STATE =====
-# Inicializar session_state ANTES de qualquer outra operação
 def init_session_state():
     if "error_messages" not in st.session_state:
         st.session_state.error_messages = []
@@ -43,6 +42,10 @@ def init_session_state():
         st.session_state.arquivos_info = []
     if "primeira_carga" not in st.session_state:
         st.session_state.primeira_carga = True
+    if "cache_data" not in st.session_state:
+        st.session_state.cache_data = {}
+    if "cache_timestamp" not in st.session_state:
+        st.session_state.cache_timestamp = {}
 
 # Chamar a função de inicialização imediatamente
 init_session_state()
@@ -77,6 +80,28 @@ def add_toast_message(message):
             print(f"Toast (session_state não disponível): {message}")
     except Exception as e:
         print(f"Erro ao adicionar mensagem de toast: {e}")
+
+# Função de cache alternativa
+def get_cached_data(key, ttl_seconds, func, *args, **kwargs):
+    """
+    Função de cache alternativa que funciona com session state
+    """
+    current_time = dt.now()
+    
+    # Verificar se o cache existe e ainda é válido
+    if key in st.session_state.cache_timestamp:
+        cache_age = (current_time - st.session_state.cache_timestamp[key]).total_seconds()
+        if cache_age < ttl_seconds:
+            return st.session_state.cache_data[key]
+    
+    # Se não existe ou expirou, calcular novo valor
+    result = func(*args, **kwargs)
+    
+    # Armazenar no cache
+    st.session_state.cache_data[key] = result
+    st.session_state.cache_timestamp[key] = current_time
+    
+    return result
 
 def get_credentials():
     try:
@@ -475,7 +500,9 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
 # ===== FUNÇÃO DE REFRESH =====
 
 def refresh_drive_data():
-    st.cache_data.clear()
+    # Limpar cache personalizado
+    st.session_state.cache_data = {}
+    st.session_state.cache_timestamp = {}
     
     global last_sync_time
     last_sync_time = None
@@ -599,16 +626,19 @@ def check_new_files():
 
 # ===== FUNÇÃO PRINCIPAL DE CARREGAMENTO =====
 
-@st.cache_data(ttl=300)
 def carregar_dados_google_drive():
+    """
+    Função para carregar dados do Google Drive com cache personalizado
+    """
     recarregar = False
     
+    # Verificar se precisamos recarregar
     if "df_dados" not in st.session_state:
         recarregar = True
         st.session_state.primeira_carga = True
     elif "ultima_verificacao" in st.session_state:
         tempo_desde_ultima_verificacao = (dt.now() - st.session_state.ultima_verificacao).total_seconds()
-        if tempo_desde_ultima_verificacao > 300:
+        if tempo_desde_ultima_verificacao > 300:  # 5 minutos
             recarregar = True
     else:
         recarregar = True
@@ -627,6 +657,7 @@ def carregar_dados_google_drive():
             add_error_message("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
             return pd.DataFrame()
         
+        # Verificar se há novos arquivos
         novos_arquivos = False
         if "arquivos_info" in st.session_state:
             arquivos_atuais = {f['id']: f['modifiedTime'] for f in files}
@@ -637,10 +668,12 @@ def carregar_dados_google_drive():
         else:
             novos_arquivos = True
         
+        # Se não há novos arquivos e não é a primeira carga, retornar dados do cache
         if not novos_arquivos and not st.session_state.get('primeira_carga', False):
             st.session_state.ultima_verificacao = dt.now()
             return st.session_state.df_dados
         
+        # Mostrar progresso
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -648,12 +681,17 @@ def carregar_dados_google_drive():
             status_text.text(message)
             progress_bar.progress(len(files) / len(files))
         
+        # Processar arquivos em paralelo
         all_data = process_files_in_parallel(service, files, max_workers=5, progress_callback=progress_callback)
         
         if all_data:
+            # Combinar todos os dados
             final_df = pd.concat(all_data, ignore_index=True)
+            
+            # Remover duplicatas
             final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
             
+            # Salvar em session state
             st.session_state.df_dados = final_df
             st.session_state.arquivos_info = files
             st.session_state.ultima_atualizacao = dt.now()
@@ -665,6 +703,7 @@ def carregar_dados_google_drive():
             add_error_message("⚠️ Nenhum dado válido encontrado")
             return pd.DataFrame()
     else:
+        # Retornar dados do cache
         return st.session_state.df_dados
 
 # ===== FUNÇÃO DE DETECÇÃO AUTOMÁTICA =====
@@ -982,6 +1021,7 @@ num_workers = st.sidebar.number_input(
 st.sidebar.markdown("### 🔄 DETECÇÃO AUTOMÁTICA")
 auto_detect = st.sidebar.checkbox("Verificar novos arquivos automaticamente", value=True)
 
+# Carregar dados usando a função sem cache do Streamlit
 df = carregar_dados_google_drive()
 
 if not df.empty:
