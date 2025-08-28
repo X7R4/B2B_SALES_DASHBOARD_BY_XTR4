@@ -105,10 +105,44 @@ def marcar_arquivo_processado(nome_arquivo, data_modificacao):
         conn.close()
 
 def salvar_no_banco(df):
-    """Salva os dados no banco de dados"""
+    """Salva os dados no banco de dados tratando duplicatas"""
+    if df.empty:
+        return
+    
     try:
         conn = sqlite3.connect(DB_PATH)
-        df.to_sql('pedidos', conn, if_exists='append', index=False)
+        cursor = conn.cursor()
+        
+        # Para cada linha no DataFrame, verificar se já existe no banco
+        for _, row in df.iterrows():
+            try:
+                # Verificar se o registro já existe
+                cursor.execute('''
+                    SELECT 1 FROM pedidos 
+                    WHERE numero_pedido = ? AND produto = ?
+                ''', (row['numero_pedido'], row['produto']))
+                
+                if cursor.fetchone() is None:
+                    # Inserir apenas se não existir
+                    cursor.execute('''
+                        INSERT INTO pedidos (numero_pedido, data, cliente, valor_total, produto, quantidade, cidade, estado, telefone, arquivo_origem)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        row['numero_pedido'],
+                        row['data'],
+                        row['cliente'],
+                        row['valor_total'],
+                        row['produto'],
+                        row['quantidade'],
+                        row['cidade'],
+                        row['estado'],
+                        row['telefone'],
+                        row['arquivo_origem']
+                    ))
+            except Exception as e:
+                st.error(f"Erro ao inserir registro {row['numero_pedido']} - {row['produto']}: {e}")
+                continue
+        
         conn.commit()
     except Exception as e:
         st.error(f"Erro ao salvar no banco: {e}")
@@ -395,6 +429,9 @@ def carregar_dados_google_drive():
                         result = processar_arquivo(file_info, service)
                         
                         if not result.empty:
+                            # Remover duplicatas dentro do arquivo processado
+                            result = result.drop_duplicates(subset=['numero_pedido', 'produto'])
+                            
                             # Salvar dados no banco imediatamente
                             salvar_no_banco(result)
                             
