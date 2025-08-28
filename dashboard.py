@@ -23,353 +23,19 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 
-# ===== INICIALIZAÇÃO DO SESSION STATE =====
-def init_session_state():
-    """Inicializa todas as variáveis necessárias do session_state"""
-    if "error_messages" not in st.session_state:
-        st.session_state.error_messages = []
-    if "toast_messages" not in st.session_state:
-        st.session_state.toast_messages = []
-    if "df_dados" not in st.session_state:
-        st.session_state.df_dados = pd.DataFrame()
-    if "ultima_atualizacao" not in st.session_state:
-        st.session_state.ultima_atualizacao = None
-    if "ultima_verificacao" not in st.session_state:
-        st.session_state.ultima_verificacao = dt.now()
-    if "arquivos_info" not in st.session_state:
-        st.session_state.arquivos_info = []
-    if "primeira_carga" not in st.session_state:
-        st.session_state.primeira_carga = True
-    if "processamento_iniciado" not in st.session_state:
-        st.session_state.processamento_iniciado = False
-    if "tempo_estimado_processamento" not in st.session_state:
-        st.session_state.tempo_estimado_processamento = 0
-    if "debug_info" not in st.session_state:
-        st.session_state.debug_info = ""
-    if "conexao_status" not in st.session_state:
-        st.session_state.conexao_status = "Não verificado"
-
-# Chamar a função de inicialização imediatamente
-init_session_state()
-
 # ===== CONFIGURAÇÃO =====
 FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
-# Variável global para controle de sincronização
-last_sync_time = None
-
-# Função segura para adicionar mensagens de erro
-def add_error_message(message):
-    try:
-        if hasattr(st, 'session_state') and hasattr(st.session_state, 'error_messages'):
-            st.session_state.error_messages.append(message)
-        else:
-            print(f"Erro: {message}")
-    except Exception as e:
-        print(f"Erro ao adicionar mensagem: {e}")
-
-# Função segura para adicionar mensagens de toast
-def add_toast_message(message):
-    try:
-        if hasattr(st, 'session_state') and hasattr(st.session_state, 'toast_messages'):
-            st.session_state.toast_messages.append(message)
-        else:
-            print(f"Toast: {message}")
-    except Exception as e:
-        print(f"Erro ao adicionar toast: {e}")
-
-def add_debug_info(message):
-    """Adiciona informações de depuração"""
-    try:
-        if hasattr(st, 'session_state') and hasattr(st.session_state, 'debug_info'):
-            st.session_state.debug_info += f"[{dt.now().strftime('%H:%M:%S')}] {message}\n"
-    except Exception as e:
-        print(f"Erro ao adicionar debug: {e}")
-
-def test_google_drive_connection():
-    """Testa a conexão com o Google Drive"""
-    try:
-        add_debug_info("Iniciando teste de conexão com Google Drive")
-        
-        # Verificar se as secrets existem
-        if "gcp_service_account" not in st.secrets:
-            error_msg = "Configuração do Google Drive não encontrada. Verifique as secrets do aplicativo."
-            add_debug_info(error_msg)
-            st.session_state.conexao_status = "Falha: Secrets não encontradas"
-            return False
-        
-        # Verificar todas as chaves necessárias
-        required_keys = [
-            "type", "project_id", "private_key_id", "private_key",
-            "client_email", "client_id", "auth_uri", "token_uri",
-            "auth_provider_x509_cert_url", "client_x509_cert_url"
-        ]
-        
-        missing_keys = []
-        for key in required_keys:
-            if key not in st.secrets["gcp_service_account"]:
-                missing_keys.append(key)
-        
-        if missing_keys:
-            error_msg = f"Chaves de configuração ausentes: {', '.join(missing_keys)}"
-            add_debug_info(error_msg)
-            st.session_state.conexao_status = f"Falha: Chaves ausentes - {', '.join(missing_keys)}"
-            return False
-        
-        # Tentar criar credenciais
-        credentials_info = {
-            "type": st.secrets["gcp_service_account"]["type"],
-            "project_id": st.secrets["gcp_service_account"]["project_id"],
-            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-            "private_key": st.secrets["gcp_service_account"]["private_key"],
-            "client_email": st.secrets["gcp_service_account"]["client_email"],
-            "client_id": st.secrets["gcp_service_account"]["client_id"],
-            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
-        }
-        
-        add_debug_info(f"Usando conta de serviço: {credentials_info['client_email']}")
-        
-        creds = service_account.Credentials.from_service_account_info(
-            credentials_info, scopes=SCOPES
-        )
-        
-        # Tentar construir o serviço
-        service = build('drive', 'v3', credentials=creds)
-        
-        # Tentar acessar a pasta
-        try:
-            folder_metadata = service.files().get(fileId=FOLDER_ID, fields="id, name").execute()
-            add_debug_info(f"Pasta encontrada: {folder_metadata.get('name', 'Desconhecido')} (ID: {folder_metadata.get('id')})")
-        except Exception as e:
-            error_msg = f"Não foi possível acessar a pasta: {str(e)}"
-            add_debug_info(error_msg)
-            st.session_state.conexao_status = f"Falha: Não foi possível acessar a pasta - {str(e)}"
-            return False
-        
-        # Tentar listar arquivos
-        try:
-            query = f"parents in '{FOLDER_ID}' and mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
-            results = service.files().list(
-                q=query, 
-                spaces='drive', 
-                fields='files(id, name)',
-                pageSize=1
-            ).execute()
-            
-            files = results.get('files', [])
-            add_debug_info(f"Teste de listagem de arquivos: {len(files)} arquivos encontrados")
-            
-            st.session_state.conexao_status = "Sucesso: Conexão estabelecida"
-            return True
-            
-        except Exception as e:
-            error_msg = f"Não foi possível listar arquivos: {str(e)}"
-            add_debug_info(error_msg)
-            st.session_state.conexao_status = f"Falha: Não foi possível listar arquivos - {str(e)}"
-            return False
-            
-    except Exception as e:
-        error_msg = f"Erro ao testar conexão: {str(e)}"
-        add_error_message(error_msg)
-        add_debug_info(error_msg)
-        st.session_state.conexao_status = f"Falha: {str(e)}"
-        return False
-
-def get_credentials():
-    """Obtém as credenciais do Google Drive com tratamento de erros detalhado"""
-    try:
-        add_debug_info("Tentando obter credenciais do st.secrets")
-        
-        # Verificar se as secrets existem
-        required_keys = [
-            "gcp_service_account.type",
-            "gcp_service_account.project_id",
-            "gcp_service_account.private_key_id",
-            "gcp_service_account.private_key",
-            "gcp_service_account.client_email",
-            "gcp_service_account.client_id",
-            "gcp_service_account.auth_uri",
-            "gcp_service_account.token_uri",
-            "gcp_service_account.auth_provider_x509_cert_url",
-            "gcp_service_account.client_x509_cert_url"
-        ]
-        
-        missing_keys = []
-        for key in required_keys:
-            if key not in st.secrets:
-                missing_keys.append(key)
-        
-        if missing_keys:
-            error_msg = f"Chaves de configuração ausentes: {', '.join(missing_keys)}"
-            add_error_message(error_msg)
-            add_debug_info(error_msg)
-            return None
-        
-        credentials_info = {
-            "type": st.secrets["gcp_service_account"]["type"],
-            "project_id": st.secrets["gcp_service_account"]["project_id"],
-            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-            "private_key": st.secrets["gcp_service_account"]["private_key"],
-            "client_email": st.secrets["gcp_service_account"]["client_email"],
-            "client_id": st.secrets["gcp_service_account"]["client_id"],
-            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
-        }
-        
-        add_debug_info(f"Usando conta de serviço: {credentials_info['client_email']}")
-        
-        credentials = service_account.Credentials.from_service_account_info(
-            credentials_info, scopes=SCOPES
-        )
-        
-        add_debug_info("Credenciais criadas com sucesso")
-        return credentials
-    except Exception as e:
-        error_msg = f"Erro ao carregar credenciais: {str(e)}"
-        add_error_message(error_msg)
-        add_debug_info(error_msg)
-        return None
-
-def authenticate_google_drive():
-    """Autentica com o Google Drive com tratamento de erros detalhado"""
-    global last_sync_time
-    
-    try:
-        if last_sync_time and (dt.now() - last_sync_time).total_seconds() < 60:
-            add_debug_info("Usando cache de autenticação (última sincronização há menos de 60 segundos)")
-            return None
-            
-        add_debug_info("Iniciando autenticação com o Google Drive")
-        
-        # Verificar se as secrets existem
-        if "gcp_service_account" not in st.secrets:
-            error_msg = "Configuração do Google Drive não encontrada. Verifique as secrets do aplicativo."
-            add_error_message(error_msg)
-            add_debug_info(error_msg)
-            return None
-        
-        credentials_info = {
-            "type": st.secrets["gcp_service_account"]["type"],
-            "project_id": st.secrets["gcp_service_account"]["project_id"],
-            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-            "private_key": st.secrets["gcp_service_account"]["private_key"],
-            "client_email": st.secrets["gcp_service_account"]["client_email"],
-            "client_id": st.secrets["gcp_service_account"]["client_id"],
-            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
-        }
-        
-        add_debug_info(f"Usando conta de serviço: {credentials_info['client_email']}")
-        
-        creds = service_account.Credentials.from_service_account_info(
-            credentials_info, scopes=SCOPES
-        )
-        
-        last_sync_time = dt.now()
-        add_debug_info("Autenticação com Google Drive concluída com sucesso")
-        return creds
-    except Exception as e:
-        error_msg = f"Erro ao autenticar com o Google Drive: {str(e)}"
-        add_error_message(error_msg)
-        add_debug_info(error_msg)
-        return None
-
-def list_drive_files(service, folder_id):
-    """Lista arquivos do Google Drive com tratamento de erros detalhado"""
-    try:
-        add_debug_info(f"Listando arquivos da pasta: {folder_id}")
-        
-        query = f"parents in '{folder_id}' and mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
-        page_token = None
-        all_files = []
-        
-        while True:
-            results = service.files().list(
-                q=query, 
-                spaces='drive', 
-                fields='nextPageToken, files(id, name, modifiedTime, size)',
-                orderBy="modifiedTime desc",
-                pageToken=page_token
-            ).execute()
-            
-            files = results.get('files', [])
-            all_files.extend(files)
-            
-            page_token = results.get('nextPageToken', None)
-            if not page_token:
-                break
-        
-        add_debug_info(f"Encontrados {len(all_files)} arquivos")
-        return all_files
-    except Exception as e:
-        error_msg = f"Erro ao listar arquivos: {str(e)}"
-        add_error_message(error_msg)
-        add_debug_info(error_msg)
-        return []
-
-def download_and_process_file(service, file_info):
-    """Processa um único arquivo"""
-    try:
-        file_id = file_info['id']
-        file_name = file_info['name']
-        
-        add_debug_info(f"Processando arquivo: {file_name}")
-        
-        # Baixar arquivo
-        request = service.files().get_media(fileId=file_id)
-        file_content = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_content, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-        
-        # Processar arquivo
-        try:
-            try:
-                df = pd.read_excel(file_content, header=None)
-            except:
-                try:
-                    df = pd.read_excel(file_content, header=0)
-                except:
-                    try:
-                        df = pd.read_excel(file_content, header=None, skiprows=5)
-                    except Exception as e:
-                        error_msg = f"Não foi possível ler o arquivo {file_name}: {str(e)}"
-                        add_error_message(error_msg)
-                        add_debug_info(error_msg)
-                        return pd.DataFrame()
-            
-            result = process_excel_data(df, file_name)
-            
-            return result
-        except Exception as e:
-            error_msg = f"Erro ao processar {file_name}: {str(e)}"
-            add_error_message(error_msg)
-            add_debug_info(error_msg)
-            return pd.DataFrame()
-    except Exception as e:
-        error_msg = f"Erro ao baixar {file_info['name']}: {str(e)}"
-        add_error_message(error_msg)
-        add_debug_info(error_msg)
-        return pd.DataFrame()
-
 # ===== FUNÇÕES DE PROCESSAMENTO =====
 
 def process_excel_data(df, file_name):
+    """Processa os dados de um arquivo Excel"""
     pedidos = []
     
     try:
         if df.empty or len(df) < 20 or len(df.columns) < 26:
-            add_error_message(f"Estrutura inesperada no arquivo {file_name}. Pulando arquivo.")
-            add_debug_info(f"Arquivo {file_name} com estrutura inválida: {len(df)} linhas, {len(df.columns)} colunas")
+            st.warning(f"Estrutura inesperada no arquivo {file_name}. Pulando arquivo.")
             return pd.DataFrame()
         
         # Extrair data do pedido
@@ -457,9 +123,7 @@ def process_excel_data(df, file_name):
                 continue
         
     except Exception as e:
-        error_msg = f"Erro ao processar arquivo {file_name}: {str(e)}"
-        add_error_message(error_msg)
-        add_debug_info(error_msg)
+        st.error(f"Erro ao processar arquivo {file_name}: {e}")
     
     return pd.DataFrame(pedidos)
 
@@ -478,14 +142,6 @@ def verificar_duplicatas(df):
         st.success("✅ Nenhuma duplicata encontrada!")
         st.caption(f"Total de pedidos: {len(df)} | Todos são únicos")
         return False
-
-def limpar_duplicatas(df):
-    df_limpo = df.drop_duplicates(subset=['Número do Pedido', 'Data'])
-    
-    st.success(f"Removidas {len(df) - len(df_limpo)} duplicatas!")
-    st.caption(f"Registros antes: {len(df)} | Registros depois: {len(df_limpo)}")
-    
-    return df_limpo
 
 def normalize_text(text):
     if pd.isna(text):
@@ -635,220 +291,103 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     
     return tabela
 
-# ===== FUNÇÃO DE REFRESH =====
-
-def refresh_drive_data():
-    global last_sync_time
-    last_sync_time = None
-    
-    if "df_dados" in st.session_state:
-        del st.session_state.df_dados
-    if "ultima_atualizacao" in st.session_state:
-        del st.session_state.ultima_atualizacao
-    if "ultima_verificacao" in st.session_state:
-        del st.session_state.ultima_verificacao
-    if "arquivos_info" in st.session_state:
-        del st.session_state.arquivos_info
-    if "processamento_iniciado" in st.session_state:
-        del st.session_state.processamento_iniciado
-    if "debug_info" in st.session_state:
-        del st.session_state.debug_info
-    if "conexao_status" in st.session_state:
-        del st.session_state.conexao_status
-    
-    st.rerun()
-
-def check_new_files():
-    creds = authenticate_google_drive()
-    if not creds:
-        add_error_message("❌ Não foi possível autenticar com o Google Drive")
-        return
-    
-    service = build('drive', 'v3', credentials=creds)
-    
-    files = list_drive_files(service, FOLDER_ID)
-    
-    if not files:
-        add_error_message("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
-        return
-    
-    novos_arquivos = []
-    arquivos_atuais = {f['id']: f['modifiedTime'] for f in files}
-    
-    if "arquivos_info" in st.session_state:
-        arquivos_cache = {f['id']: f['modifiedTime'] for f in st.session_state.arquivos_info}
-        
-        for file_id, modified_time in arquivos_atuais.items():
-            if file_id not in arquivos_cache or arquivos_cache[file_id] != modified_time:
-                for file_info in files:
-                    if file_info['id'] == file_id:
-                        novos_arquivos.append(file_info)
-                        break
-    else:
-        novos_arquivos = files
-    
-    if not novos_arquivos:
-        add_toast_message("✅ Nenhum novo arquivo encontrado na pasta 'pedidos'")
-        st.session_state.ultima_verificacao = dt.now()
-        return
-    
-    add_toast_message(f"📁 {len(novos_arquivos)} novos arquivos encontrados na pasta 'pedidos'")
-    
-    # Processar arquivos sequencialmente
-    all_data = []
-    for file_info in novos_arquivos:
-        df_result = download_and_process_file(service, file_info)
-        if not df_result.empty:
-            all_data.append(df_result)
-    
-    if all_data:
-        if "df_dados" in st.session_state:
-            df_existente = st.session_state.df_dados
-            
-            arquivos_novos_nomes = [f['name'] for f in novos_arquivos]
-            df_filtrado = df_existente[~df_existente['Arquivo Origem'].isin(arquivos_novos_nomes)]
-            
-            df_novos = pd.concat(all_data, ignore_index=True)
-            final_df = pd.concat([df_filtrado, df_novos], ignore_index=True)
-        else:
-            final_df = pd.concat(all_data, ignore_index=True)
-        
-        final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
-        
-        add_toast_message(f"✅ {len(novos_arquivos)} arquivos atualizados! {len(final_df)} pedidos no total")
-        
-        st.session_state.df_dados = final_df
-        st.session_state.arquivos_info = files
-        st.session_state.ultima_atualizacao = dt.now()
-        st.session_state.ultima_verificacao = dt.now()
-        st.session_state.primeira_carga = False
-    else:
-        add_error_message("⚠️ Nenhum dado válido encontrado nos novos arquivos")
-
 # ===== FUNÇÃO PRINCIPAL DE CARREGAMENTO =====
 
 def carregar_dados_google_drive():
     """
-    Função para carregar dados do Google Drive processando um arquivo por vez
+    Função simplificada para carregar dados do Google Drive
     """
-    recarregar = False
-    
-    # Verificar se precisamos recarregar
-    if "df_dados" not in st.session_state:
-        recarregar = True
-        st.session_state.primeira_carga = True
-        add_debug_info("Primeira carga de dados")
-    elif "ultima_verificacao" in st.session_state and st.session_state.ultima_verificacao is not None:
-        tempo_desde_ultima_verificacao = (dt.now() - st.session_state.ultima_verificacao).total_seconds()
-        if tempo_desde_ultima_verificacao > 300:  # 5 minutos
-            recarregar = True
-            add_debug_info(f"Recarregando dados após {tempo_desde_ultima_verificacao} segundos")
-    else:
-        recarregar = True
-        add_debug_info("Recarregando dados (sem timestamp de verificação)")
-    
-    if recarregar:
-        # Testar a conexão primeiro
-        conexao_ok = test_google_drive_connection()
+    try:
+        # Autenticar com o Google Drive
+        credentials_info = {
+            "type": st.secrets["gcp_service_account"]["type"],
+            "project_id": st.secrets["gcp_service_account"]["project_id"],
+            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+            "private_key": st.secrets["gcp_service_account"]["private_key"],
+            "client_email": st.secrets["gcp_service_account"]["client_email"],
+            "client_id": st.secrets["gcp_service_account"]["client_id"],
+            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
+        }
         
-        if not conexao_ok:
-            add_error_message("❌ Falha na conexão com o Google Drive")
-            return pd.DataFrame()
-        
-        creds = authenticate_google_drive()
-        if not creds:
-            add_error_message("❌ Não foi possível autenticar com o Google Drive")
-            return pd.DataFrame()
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_info, scopes=SCOPES
+        )
         
         service = build('drive', 'v3', credentials=creds)
         
-        files = list_drive_files(service, FOLDER_ID)
+        # Listar arquivos
+        query = f"parents in '{FOLDER_ID}' and mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+        results = service.files().list(
+            q=query, 
+            spaces='drive', 
+            fields='files(id, name, modifiedTime, size)',
+            orderBy="modifiedTime desc"
+        ).execute()
+        
+        files = results.get('files', [])
         
         if not files:
-            add_error_message("⚠️ Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
+            st.warning("Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
             return pd.DataFrame()
         
-        # Verificar se há novos arquivos
-        novos_arquivos = False
-        if "arquivos_info" in st.session_state:
-            arquivos_atuais = {f['id']: f['modifiedTime'] for f in files}
-            arquivos_cache = {f['id']: f['modifiedTime'] for f in st.session_state.arquivos_info}
-            
-            if arquivos_atuais != arquivos_cache:
-                novos_arquivos = True
-                add_debug_info("Novos arquivos detectados")
-        else:
-            novos_arquivos = True
-            add_debug_info("Primeira vez listando arquivos")
+        st.info(f"Encontrados {len(files)} arquivos. Processando...")
         
-        # Se não há novos arquivos e não é a primeira carga, retornar dados do cache
-        if not novos_arquivos and not st.session_state.get('primeira_carga', False):
-            st.session_state.ultima_verificacao = dt.now()
-            add_debug_info("Usando dados do cache (nenhum novo arquivo)")
-            return st.session_state.df_dados
+        # Processar cada arquivo
+        all_data = []
+        for i, file_info in enumerate(files):
+            try:
+                # Baixar arquivo
+                request = service.files().get_media(fileId=file_info['id'])
+                file_content = io.BytesIO()
+                downloader = MediaIoBaseDownload(file_content, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                
+                # Processar arquivo
+                try:
+                    df = pd.read_excel(file_content, header=None)
+                except:
+                    try:
+                        df = pd.read_excel(file_content, header=0)
+                    except:
+                        try:
+                            df = pd.read_excel(file_content, header=None, skiprows=5)
+                        except Exception as e:
+                            st.warning(f"Não foi possível ler o arquivo {file_info['name']}: {e}")
+                            continue
+                
+                result = process_excel_data(df, file_info['name'])
+                if not result.empty:
+                    all_data.append(result)
+                
+                # Atualizar progresso
+                progress = (i + 1) / len(files)
+                st.progress(progress, text=f"Processando: {file_info['name']} ({i+1}/{len(files)})")
+                
+            except Exception as e:
+                st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
+                continue
         
-        # Processar arquivos sequencialmente
-        if not st.session_state.get('processamento_iniciado', False):
-            st.session_state.processamento_iniciado = True
+        if all_data:
+            # Combinar todos os dados
+            final_df = pd.concat(all_data, ignore_index=True)
             
-            # Estimar tempo de processamento (aproximadamente 5 segundos por arquivo)
-            tempo_estimado = len(files) * 5
-            st.session_state.tempo_estimado_processamento = tempo_estimado
+            # Remover duplicatas
+            final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
             
-            st.write(f"🔄 Processando {len(files)} arquivos do Google Drive...")
-            st.write(f"⏱️ Tempo estimado: {tempo_estimado//60} minutos e {tempo_estimado%60} segundos")
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            all_data = []
-            total_files = len(files)
-            tempo_inicial = time.time()
-            
-            for i, file_info in enumerate(files):
-                # Atualizar status
-                progress = (i + 1) / total_files
-                progress_bar.progress(progress)
-                
-                tempo_decorrido = time.time() - tempo_inicial
-                tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (total_files - i - 1) if i > 0 else 0
-                
-                status_text.text(f"({i+1}/{total_files}) Processando: {file_info['name']} - Tempo restante estimado: {tempo_restante_estimado//60:.0f}min {tempo_restante_estimado%60:.0f}s")
-                
-                df_result = download_and_process_file(service, file_info)
-                if not df_result.empty:
-                    all_data.append(df_result)
-            
-            if all_data:
-                # Combinar todos os dados
-                final_df = pd.concat(all_data, ignore_index=True)
-                
-                # Remover duplicatas
-                final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
-                
-                # Salvar em session state
-                st.session_state.df_dados = final_df
-                st.session_state.arquivos_info = files
-                st.session_state.ultima_atualizacao = dt.now()
-                st.session_state.ultima_verificacao = dt.now()
-                st.session_state.primeira_carga = False
-                
-                tempo_total = time.time() - tempo_inicial
-                st.success(f"✅ Processamento concluído! {len(final_df)} pedidos no total (tempo: {tempo_total//60:.0f}min {tempo_total%60:.0f}s)")
-                add_debug_info(f"Processamento concluído com {len(final_df)} pedidos")
-                return final_df
-            else:
-                add_error_message("⚠️ Nenhum dado válido encontrado")
-                add_debug_info("Nenhum dado válido encontrado durante o processamento")
-                return pd.DataFrame()
+            st.success(f"✅ Processamento concluído! {len(final_df)} pedidos no total")
+            return final_df
         else:
-            # Se o processamento já foi iniciado, retornar dados do cache
-            add_debug_info("Processamento já iniciado, usando dados do cache")
-            return st.session_state.df_dados
-    else:
-        # Retornar dados do cache
-        add_debug_info("Usando dados do cache")
-        return st.session_state.df_dados
+            st.warning("⚠️ Nenhum dado válido encontrado nos arquivos")
+            return pd.DataFrame()
+            
+    except Exception as e:
+        st.error(f"Erro ao carregar dados do Google Drive: {e}")
+        return pd.DataFrame()
 
 # ===== CONFIGURAÇÃO INICIAL =====
 
@@ -860,11 +399,8 @@ try:
     city_list = municipios_df["nome_normalizado"].tolist()
     
     estados_df["uf_normalizado"] = estados_df["uf"].apply(normalize_text)
-    add_debug_info("Arquivos de referência carregados com sucesso")
 except Exception as e:
-    error_msg = f"Erro ao carregar arquivos de referência: {str(e)}"
-    add_error_message(error_msg)
-    add_debug_info(error_msg)
+    st.error(f"Erro ao carregar arquivos de referência: {e}")
     st.stop()
 
 st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
@@ -1055,31 +591,6 @@ st.markdown("""
             color: #4A90E2;
             font-weight: bold;
         }
-        .debug-info {
-            background: #2A2A2A;
-            border: 1px solid #4A4A4A;
-            border-radius: 8px;
-            padding: 15px;
-            margin-top: 20px;
-            font-family: monospace;
-            font-size: 12px;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        .conexao-status {
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 10px;
-            font-weight: bold;
-        }
-        .conexao-sucesso {
-            background-color: #2E7D32;
-            color: white;
-        }
-        .conexao-falha {
-            background-color: #C62828;
-            color: white;
-        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -1090,70 +601,21 @@ st.sidebar.title("📊 MENU DE SINCRONIZAÇÃO")
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
 st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE - PASTA 'PEDIDOS'")
 
-# Mostrar status da conexão
-if "conexao_status" in st.session_state:
-    if "Sucesso" in st.session_state.conexao_status:
-        st.sidebar.markdown(f'<div class="conexao-status conexao-sucesso">{st.session_state.conexao_status}</div>', unsafe_allow_html=True)
-    else:
-        st.sidebar.markdown(f'<div class="conexao-status conexao-falha">{st.session_state.conexao_status}</div>', unsafe_allow_html=True)
+# Botão para recarregar dados
+if st.sidebar.button("🔄 Recarregar Dados"):
+    st.rerun()
 
-st.sidebar.markdown("### ⚙️ CONFIGURAÇÕES")
-limitar_arquivos = st.sidebar.checkbox("Limitar número de arquivos", value=False)
-max_arquivos = 100
-
-if limitar_arquivos:
-    max_arquivos = st.sidebar.number_input(
-        "Máximo de arquivos para processar", 
-        min_value=10, 
-        max_value=5000, 
-        value=100,
-        step=50
-    )
-
-st.sidebar.markdown("### 🔄 DETECÇÃO AUTOMÁTICA")
-auto_detect = st.sidebar.checkbox("Verificar novos arquivos automaticamente", value=True)
+st.sidebar.markdown('</div>', unsafe_allow_html=True)
 
 # Carregar dados
 df = carregar_dados_google_drive()
 
 if not df.empty:
     st.sidebar.success("✅ Conectado ao Google Drive")
-    if "arquivos_info" in st.session_state:
-        st.sidebar.caption(f"📁 {len(st.session_state.arquivos_info)} arquivos Excel na pasta 'pedidos'")
-        if "ultima_atualizacao" in st.session_state:
-            st.sidebar.caption(f"🕒 Última atualização: {st.session_state.ultima_atualizacao.strftime('%d/%m/%Y %H:%M')}")
+    st.sidebar.caption(f"📁 {len(df)} pedidos carregados")
 else:
     st.sidebar.error("❌ Erro na conexão")
-    st.sidebar.caption("Verifique a autenticacao")
-    
-    # Adicionar informações de depuração
-    if "debug_info" in st.session_state and st.session_state.debug_info:
-        with st.sidebar.expander("🔍 Informações de Depuração"):
-            st.markdown(f'<div class="debug-info">{st.session_state.debug_info}</div>', unsafe_allow_html=True)
-
-st.sidebar.markdown('</div>', unsafe_allow_html=True)
-
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    if st.button("🔄 Recarregar Dados"):
-        refresh_drive_data()
-with col2:
-    if st.button("🔍 Verificar Novos"):
-        check_new_files()
-
-st.sidebar.markdown("---")
-
-# Exibir mensagens de erro
-if st.session_state.error_messages:
-    for error_msg in st.session_state.error_messages:
-        st.error(error_msg)
-    st.session_state.error_messages = []
-
-# Exibir mensagens de toast
-if st.session_state.toast_messages:
-    for toast_msg in st.session_state.toast_messages:
-        st.toast(toast_msg)
-    st.session_state.toast_messages = []
+    st.sidebar.caption("Verifique a autenticação")
 
 # ===== CONTEÚDO PRINCIPAL =====
 
@@ -1752,32 +1214,5 @@ if not df.empty:
 
 else:
     st.warning("⚠️ Nenhum dado disponível. Verifique a configuração do Google Drive.")
-    
-    # Adicionar informações de depuração na página principal também
-    if "debug_info" in st.session_state and st.session_state.debug_info:
-        with st.expander("🔍 Informações de Depuração Detalhadas"):
-            st.markdown(f'<div class="debug-info">{st.session_state.debug_info}</div>', unsafe_allow_html=True)
-            
-            st.markdown("### 🛠️ Possíveis Soluções:")
-            st.markdown("""
-            1. **Verifique as credenciais do Google Drive**:
-               - Certifique-se de que as secrets do Streamlit estão configuradas corretamente
-               - Verifique se a conta de serviço tem acesso à pasta 'pedidos'
-               - Confirme se o FOLDER_ID está correto
-
-            2. **Verifique a pasta do Google Drive**:
-               - A pasta 'pedidos' existe no Google Drive?
-               - A pasta contém arquivos Excel (.xlsx)?
-               - A conta de serviço tem permissão para acessar a pasta?
-
-            3. **Verifique a conexão**:
-               - Tente recarregar a página
-               - Clique no botão "Recarregar Dados" no menu lateral
-               - Verifique se há problemas de rede
-
-            4. **Verifique o formato dos arquivos**:
-               - Os arquivos devem estar no formato .xlsx
-               - Os arquivos devem seguir a estrutura esperada pelo sistema
-            """)
 
 st.markdown('<div class="creditos">developed by @joao_vendascastor</div>', unsafe_allow_html=True)
