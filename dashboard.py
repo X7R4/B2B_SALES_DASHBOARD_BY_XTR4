@@ -19,6 +19,7 @@ from workalendar.america import Brazil
 import gc
 import threading
 import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 
 # Bibliotecas Google
 from google.oauth2 import service_account
@@ -159,6 +160,12 @@ def limpar_banco_de_dados():
         if os.path.exists(PARQUET_PATH):
             os.remove(PARQUET_PATH)
             
+        # Limpar cache
+        if 'df_dados' in st.session_state:
+            del st.session_state.df_dados
+        if 'ultima_atualizacao' in st.session_state:
+            del st.session_state.ultima_atualizacao
+            
         st.success("Banco de dados limpo com sucesso!")
     except Exception as e:
         st.error(f"Erro ao limpar banco: {e}")
@@ -298,7 +305,9 @@ def carregar_dados_google_drive():
     """
     # Verificar se os dados já estão em cache
     if 'df_dados' in st.session_state and 'ultima_atualizacao' in st.session_state:
-        if (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 3600:
+        # CORREÇÃO: Verificar se ultima_atualizacao não é None antes de calcular a diferença
+        if st.session_state.ultima_atualizacao is not None and \
+           (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 3600:
             return st.session_state.df_dados
     
     try:
@@ -1513,6 +1522,7 @@ if not df.empty:
         resultados, valor_total_vendido, meta_atingida = calcular_comissoes_e_bonus(df, inicio_meta, fim_meta)
         
         st.subheader("Detalhamento dos Cálculos")
+        st.dataframe(resultados.style.format)
         st.dataframe(resultados.style.format({'Valor (R$)': 'R$ {:,.2f}'}), width="stretch")
         
         st.markdown('<div class="ganhos-destaque">', unsafe_allow_html=True)
