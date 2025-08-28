@@ -34,7 +34,6 @@ FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 DB_PATH = 'pedidos.db'
 PARQUET_PATH = 'pedidos.parquet'
-# REMOVIDO: MAX_ARQUIVOS - Vamos processar todos os arquivos encontrados
 
 # ===== FUNÇÕES DE BANCO DE DADOS =====
 
@@ -267,7 +266,7 @@ def process_excel_data(df, file_name):
     
     return pd.DataFrame(pedidos)
 
-def processar_arquivo(file_info):
+def processar_arquivo(file_info, service):
     """Processa um único arquivo"""
     try:
         # Baixar arquivo
@@ -375,7 +374,7 @@ def carregar_dados_google_drive():
                 tempo_estimado_text = st.empty()
                 tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_estimado_total//60:.0f} minutos e {tempo_estimado_total%60:.0f} segundos")
                 
-                # Processar cada arquivo sequencialmente (SEM THREADS)
+                # Processar cada arquivo sequencialmente
                 all_data = []
                 tempo_inicial = time.time()
                 arquivos_com_erro = 0
@@ -385,7 +384,7 @@ def carregar_dados_google_drive():
                     arquivo_atual_text.text(f"📁 Processando: {file_info['name']}")
                     
                     try:
-                        result = processar_arquivo(file_info)
+                        result = processar_arquivo(file_info, service)
                         if not result.empty:
                             all_data.append(result)
                     except Exception as e:
@@ -740,16 +739,6 @@ st.markdown("""
             width: 100% !important; 
             height: auto !important; 
         }
-        .stSpinner { 
-            position: fixed; 
-            top: 50%; 
-            left: 50%; 
-            transform: translate(-50%, -50%); 
-            text-align: center; 
-            z-index: 1000; 
-            width: auto; 
-            height: auto; 
-        }
         .stTabs [data-baseweb="tab-list"] { 
             background: linear-gradient(135deg, #3A3A3A, #2A2A2A); 
             border-bottom: 1px solid #4A4A4A; 
@@ -776,20 +765,6 @@ st.markdown("""
             background-color: #2A2A2A; 
             color: #FF8C00; 
             font-weight: bold; 
-        }
-        .filter-container { 
-            display: flex; 
-            gap: 15px; 
-            align-items: center; 
-        }
-        .filter-label { 
-            font-weight: 500; 
-            color: #FF8C00; 
-            margin-right: 10px; 
-        }
-        div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stPlotlyChart"]) {
-            display: flex;
-            justify-content: center;
         }
         .filtro-topo {
             background: linear-gradient(135deg, #3A3A3A, #2A2A2A);
@@ -821,24 +796,6 @@ st.markdown("""
             padding: 15px;
             margin-bottom: 20px;
             box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-        }
-        .sync-button {
-            background: linear-gradient(90deg, #FF8C00, #FFA500);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 12px 24px;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-            text-align: center;
-            margin: 20px 0;
-        }
-        .sync-button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 12px rgba(0,0,0,0.3);
         }
         .creditos {
             text-align: center;
