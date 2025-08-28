@@ -19,7 +19,6 @@ from workalendar.america import Brazil
 import gc
 import threading
 import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor
 
 # Bibliotecas Google
 from google.oauth2 import service_account
@@ -373,12 +372,12 @@ def carregar_dados_google_drive():
             arquivo_atual_text = st.empty()
             
             with st.spinner("CARREGANDO OS ARQUIVOS PELA PRIMEIRA VEZ POR FAVOR AGUARDE"):
-                # Estimar tempo de processamento (agora reduzido pela metade)
-                tempo_estimado_total = (len(all_files) * 3) / 2  # Considerando paralelismo
+                # Estimar tempo de processamento
+                tempo_estimado_total = len(all_files) * 3  # Tempo estimado por arquivo
                 tempo_estimado_text = st.empty()
                 tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_estimado_total//60:.0f} minutos e {tempo_estimado_total%60:.0f} segundos")
                 
-                # Processar cada arquivo (usando threads)
+                # Processar cada arquivo sequencialmente (sem threads)
                 all_data = []
                 tempo_inicial = time.time()
                 arquivos_com_erro = 0
@@ -386,42 +385,31 @@ def carregar_dados_google_drive():
                 # Limitar o número de arquivos para processamento inicial
                 arquivos_processar = all_files[:MAX_ARQUIVOS]
                 
-                # Usar ThreadPoolExecutor para processar em paralelo
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    # Submeter todos os arquivos para processamento
-                    future_to_file = {
-                        executor.submit(processar_arquivo, file_info): file_info 
-                        for file_info in arquivos_processar
-                    }
+                for i, file_info in enumerate(arquivos_processar):
+                    # Atualizar nome do arquivo atual
+                    arquivo_atual_text.text(f"📁 Processando: {file_info['name']}")
                     
-                    # Processar resultados à medida que eles ficam prontos
-                    for i, future in enumerate(concurrent.futures.as_completed(future_to_file)):
-                        file_info = future_to_file[future]
-                        
-                        # Atualizar nome do arquivo atual
-                        arquivo_atual_text.text(f"📁 Processando: {file_info['name']}")
-                        
-                        try:
-                            result = future.result()
-                            if not result.empty:
-                                all_data.append(result)
-                        except Exception as e:
-                            arquivos_com_erro += 1
-                            st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
-                            continue
-                        
-                        # Atualizar progresso
-                        progress = (i + 1) / len(arquivos_processar)
-                        progress_bar.progress(progress)
-                        
-                        # Atualizar status
-                        status_text.text(f"Progresso: {i+1}/{len(arquivos_processar)} arquivos ({progress*100:.1f}%)")
-                        
-                        # Atualizar estimativa de tempo restante
-                        tempo_decorrido = time.time() - tempo_inicial
-                        if i > 0:
-                            tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (len(arquivos_processar) - i - 1)
-                            tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_restante_estimado//60:.0f}min {tempo_restante_estimado%60:.0f}s restantes")
+                    try:
+                        result = processar_arquivo(file_info)
+                        if not result.empty:
+                            all_data.append(result)
+                    except Exception as e:
+                        arquivos_com_erro += 1
+                        st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
+                        continue
+                    
+                    # Atualizar progresso
+                    progress = (i + 1) / len(arquivos_processar)
+                    progress_bar.progress(progress)
+                    
+                    # Atualizar status
+                    status_text.text(f"Progresso: {i+1}/{len(arquivos_processar)} arquivos ({progress*100:.1f}%)")
+                    
+                    # Atualizar estimativa de tempo restante
+                    tempo_decorrido = time.time() - tempo_inicial
+                    if i > 0:
+                        tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (len(arquivos_processar) - i - 1)
+                        tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_restante_estimado//60:.0f}min {tempo_restante_estimado%60:.0f}s restantes")
                 
                 if all_data:
                     # Combinar todos os dados
@@ -1522,7 +1510,6 @@ if not df.empty:
         resultados, valor_total_vendido, meta_atingida = calcular_comissoes_e_bonus(df, inicio_meta, fim_meta)
         
         st.subheader("Detalhamento dos Cálculos")
-        st.dataframe(resultados.style.format)
         st.dataframe(resultados.style.format({'Valor (R$)': 'R$ {:,.2f}'}), width="stretch")
         
         st.markdown('<div class="ganhos-destaque">', unsafe_allow_html=True)
