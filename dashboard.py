@@ -17,8 +17,6 @@ import time
 import json
 from workalendar.america import Brazil
 import gc
-import threading
-import concurrent.futures
 
 # Bibliotecas Google
 from google.oauth2 import service_account
@@ -36,7 +34,7 @@ FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 DB_PATH = 'pedidos.db'
 PARQUET_PATH = 'pedidos.parquet'
-MAX_ARQUIVOS = 1000  # Limite de arquivos para processamento inicial
+# REMOVIDO: MAX_ARQUIVOS - Vamos processar todos os arquivos encontrados
 
 # ===== FUNÇÕES DE BANCO DE DADOS =====
 
@@ -377,15 +375,12 @@ def carregar_dados_google_drive():
                 tempo_estimado_text = st.empty()
                 tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_estimado_total//60:.0f} minutos e {tempo_estimado_total%60:.0f} segundos")
                 
-                # Processar cada arquivo sequencialmente (sem threads)
+                # Processar cada arquivo sequencialmente (SEM THREADS)
                 all_data = []
                 tempo_inicial = time.time()
                 arquivos_com_erro = 0
                 
-                # Limitar o número de arquivos para processamento inicial
-                arquivos_processar = all_files[:MAX_ARQUIVOS]
-                
-                for i, file_info in enumerate(arquivos_processar):
+                for i, file_info in enumerate(all_files):
                     # Atualizar nome do arquivo atual
                     arquivo_atual_text.text(f"📁 Processando: {file_info['name']}")
                     
@@ -399,16 +394,16 @@ def carregar_dados_google_drive():
                         continue
                     
                     # Atualizar progresso
-                    progress = (i + 1) / len(arquivos_processar)
+                    progress = (i + 1) / len(all_files)
                     progress_bar.progress(progress)
                     
                     # Atualizar status
-                    status_text.text(f"Progresso: {i+1}/{len(arquivos_processar)} arquivos ({progress*100:.1f}%)")
+                    status_text.text(f"Progresso: {i+1}/{len(all_files)} arquivos ({progress*100:.1f}%)")
                     
                     # Atualizar estimativa de tempo restante
                     tempo_decorrido = time.time() - tempo_inicial
                     if i > 0:
-                        tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (len(arquivos_processar) - i - 1)
+                        tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (len(all_files) - i - 1)
                         tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_restante_estimado//60:.0f}min {tempo_restante_estimado%60:.0f}s restantes")
                 
                 if all_data:
