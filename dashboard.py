@@ -297,11 +297,10 @@ def processar_arquivo(file_info, service):
 
 def carregar_dados_google_drive():
     """
-    Função para carregar dados do Google Drive com cache e otimizações
+    Função para carregar dados do Google Drive com processamento incremental
     """
     # Verificar se os dados já estão em cache
     if 'df_dados' in st.session_state and 'ultima_atualizacao' in st.session_state:
-        # CORREÇÃO: Verificar se ultima_atualizacao não é None antes de calcular a diferença
         if st.session_state.ultima_atualizacao is not None and \
            (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 3600:
             return st.session_state.df_dados
@@ -367,6 +366,7 @@ def carregar_dados_google_drive():
             progress_bar = st.progress(0)
             status_text = st.empty()
             arquivo_atual_text = st.empty()
+            status_banco_text = st.empty()
             
             with st.spinner("CARREGANDO OS ARQUIVOS PELA PRIMEIRA VEZ POR FAVOR AGUARDE"):
                 # Estimar tempo de processamento
@@ -375,7 +375,6 @@ def carregar_dados_google_drive():
                 tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_estimado_total//60:.0f} minutos e {tempo_estimado_total%60:.0f} segundos")
                 
                 # Processar cada arquivo sequencialmente
-                all_data = []
                 tempo_inicial = time.time()
                 arquivos_com_erro = 0
                 
@@ -384,9 +383,46 @@ def carregar_dados_google_drive():
                     arquivo_atual_text.text(f"📁 Processando: {file_info['name']}")
                     
                     try:
+                        # Verificar se o arquivo já foi processado
+                        if arquivo_foi_processado(file_info['name'], file_info['modifiedTime']):
+                            st.info(f"⏭️ Pulando arquivo já processado: {file_info['name']}")
+                            progress = (i + 1) / len(all_files)
+                            progress_bar.progress(progress)
+                            status_text.text(f"Progresso: {i+1}/{len(all_files)} arquivos ({progress*100:.1f}%)")
+                            continue
+                        
+                        # Processar o arquivo
                         result = processar_arquivo(file_info, service)
+                        
                         if not result.empty:
-                            all_data.append(result)
+                            # Salvar dados no banco imediatamente
+                            salvar_no_banco(result)
+                            
+                            # Atualizar cache
+                            if 'df_dados' in st.session_state:
+                                st.session_state.df_dados = pd.concat([st.session_state.df_dados, result], ignore_index=True)
+                            else:
+                                st.session_state.df_dados = result
+                                
+                            st.session_state.ultima_atualizacao = dt.now()
+                            
+                            # Marcar arquivo como processado
+                            marcar_arquivo_processado(file_info['name'], file_info['modifiedTime'])
+                            
+                            # Atualizar status do banco de dados
+                            try:
+                                conn = sqlite3.connect(DB_PATH)
+                                cursor = conn.cursor()
+                                cursor.execute("SELECT COUNT(*) FROM pedidos")
+                                total_pedidos = cursor.fetchone()[0]
+                                cursor.execute("SELECT COUNT(*) FROM arquivos_processados")
+                                arquivos_processados = cursor.fetchone()[0]
+                                conn.close()
+                                
+                                # Atualizar status do banco
+                                status_banco_text.text(f"📊 {total_pedidos} pedidos | 📁 {arquivos_processados} arquivos")
+                            except Exception as e:
+                                st.error(f"Erro ao atualizar status do banco: {e}")
                     except Exception as e:
                         arquivos_com_erro += 1
                         st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
@@ -405,22 +441,10 @@ def carregar_dados_google_drive():
                         tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (len(all_files) - i - 1)
                         tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_restante_estimado//60:.0f}min {tempo_restante_estimado%60:.0f}s restantes")
                 
-                if all_data:
-                    # Combinar todos os dados
-                    final_df = pd.concat(all_data, ignore_index=True)
-                    
-                    # Remover duplicatas
-                    final_df = final_df.drop_duplicates(subset=['numero_pedido', 'produto'])
-                    
-                    # Salvar no banco de dados
-                    salvar_no_banco(final_df)
-                    
-                    # Salvar em Parquet
+                # Salvar dados acumulados em Parquet no final
+                if 'df_dados' in st.session_state and not st.session_state.df_dados.empty:
+                    final_df = st.session_state.df_dados.drop_duplicates(subset=['numero_pedido', 'produto'])
                     salvar_em_parquet(final_df)
-                    
-                    # Salvar em cache
-                    st.session_state.df_dados = final_df
-                    st.session_state.ultima_atualizacao = dt.now()
                     
                     # Limpar interface de carregamento
                     loading_container.empty()
