@@ -40,6 +40,10 @@ def init_session_state():
         st.session_state.arquivos_info = []
     if "primeira_carga" not in st.session_state:
         st.session_state.primeira_carga = True
+    if "processamento_iniciado" not in st.session_state:
+        st.session_state.processamento_iniciado = False
+    if "tempo_estimado_processamento" not in st.session_state:
+        st.session_state.tempo_estimado_processamento = 0
 
 # Chamar a função de inicialização imediatamente
 init_session_state()
@@ -157,8 +161,6 @@ def download_and_process_file(service, file_info):
         file_id = file_info['id']
         file_name = file_info['name']
         
-        st.write(f"Processando: {file_name}")
-        
         # Baixar arquivo
         request = service.files().get_media(fileId=file_id)
         file_content = io.BytesIO()
@@ -182,11 +184,6 @@ def download_and_process_file(service, file_info):
                         return pd.DataFrame()
             
             result = process_excel_data(df, file_name)
-            
-            if not result.empty:
-                st.success(f"✅ {file_name} processado: {len(result)} registros")
-            else:
-                st.warning(f"⚠️ {file_name} não retornou dados válidos")
             
             return result
         except Exception as e:
@@ -481,6 +478,8 @@ def refresh_drive_data():
         del st.session_state.ultima_verificacao
     if "arquivos_info" in st.session_state:
         del st.session_state.arquivos_info
+    if "processamento_iniciado" in st.session_state:
+        del st.session_state.processamento_iniciado
     
     st.rerun()
 
@@ -601,42 +600,60 @@ def carregar_dados_google_drive():
             return st.session_state.df_dados
         
         # Processar arquivos sequencialmente
-        st.write("🔄 Processando arquivos do Google Drive...")
-        progress_bar = st.progress(0)
-        
-        all_data = []
-        total_files = len(files)
-        
-        for i, file_info in enumerate(files):
-            st.write(f"({i+1}/{total_files}) Processando: {file_info['name']}")
+        if not st.session_state.get('processamento_iniciado', False):
+            st.session_state.processamento_iniciado = True
             
-            df_result = download_and_process_file(service, file_info)
-            if not df_result.empty:
-                all_data.append(df_result)
+            # Estimar tempo de processamento (aproximadamente 5 segundos por arquivo)
+            tempo_estimado = len(files) * 5
+            st.session_state.tempo_estimado_processamento = tempo_estimado
             
-            # Atualizar progresso
-            progress = (i + 1) / total_files
-            progress_bar.progress(progress)
-        
-        if all_data:
-            # Combinar todos os dados
-            final_df = pd.concat(all_data, ignore_index=True)
+            st.write(f"🔄 Processando {len(files)} arquivos do Google Drive...")
+            st.write(f"⏱️ Tempo estimado: {tempo_estimado//60} minutos e {tempo_estimado%60} segundos")
             
-            # Remover duplicatas
-            final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            # Salvar em session state
-            st.session_state.df_dados = final_df
-            st.session_state.arquivos_info = files
-            st.session_state.ultima_atualizacao = dt.now()
-            st.session_state.ultima_verificacao = dt.now()
-            st.session_state.primeira_carga = False
+            all_data = []
+            total_files = len(files)
+            tempo_inicial = time.time()
             
-            st.success(f"✅ Processamento concluído! {len(final_df)} pedidos no total")
-            return final_df
+            for i, file_info in enumerate(files):
+                # Atualizar status
+                progress = (i + 1) / total_files
+                progress_bar.progress(progress)
+                
+                tempo_decorrido = time.time() - tempo_inicial
+                tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (total_files - i - 1) if i > 0 else 0
+                
+                status_text.text(f"({i+1}/{total_files}) Processando: {file_info['name']} - Tempo restante estimado: {tempo_restante_estimado//60:.0f}min {tempo_restante_estimado%60:.0f}s")
+                
+                df_result = download_and_process_file(service, file_info)
+                if not df_result.empty:
+                    all_data.append(df_result)
+            
+            if all_data:
+                # Combinar todos os dados
+                final_df = pd.concat(all_data, ignore_index=True)
+                
+                # Remover duplicatas
+                final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
+                
+                # Salvar em session state
+                st.session_state.df_dados = final_df
+                st.session_state.arquivos_info = files
+                st.session_state.ultima_atualizacao = dt.now()
+                st.session_state.ultima_verificacao = dt.now()
+                st.session_state.primeira_carga = False
+                
+                tempo_total = time.time() - tempo_inicial
+                st.success(f"✅ Processamento concluído! {len(final_df)} pedidos no total (tempo: {tempo_total//60:.0f}min {tempo_total%60:.0f}s)")
+                return final_df
+            else:
+                add_error_message("⚠️ Nenhum dado válido encontrado")
+                return pd.DataFrame()
         else:
-            add_error_message("⚠️ Nenhum dado válido encontrado")
-            return pd.DataFrame()
+            # Se o processamento já foi iniciado, retornar dados do cache
+            return st.session_state.df_dados
     else:
         # Retornar dados do cache
         return st.session_state.df_dados
