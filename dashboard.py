@@ -16,6 +16,9 @@ from datetime import datetime as dt
 import time
 import json
 from workalendar.america import Brazil
+import gc
+import threading
+import concurrent.futures
 
 # Bibliotecas Google
 from google.oauth2 import service_account
@@ -23,9 +26,142 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 
+# Novas bibliotecas
+import sqlite3
+import pyarrow.parquet as pq
+from apscheduler.schedulers.background import BackgroundScheduler
+
 # ===== CONFIGURAÇÃO =====
 FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+DB_PATH = 'pedidos.db'
+PARQUET_PATH = 'pedidos.parquet'
+MAX_ARQUIVOS = 1000  # Limite de arquivos para processamento inicial
+
+# ===== FUNÇÕES DE BANCO DE DADOS =====
+
+def init_db():
+    """Inicializa o banco de dados SQLite"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Tabela para registrar arquivos processados
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS arquivos_processados (
+            nome_arquivo TEXT PRIMARY KEY,
+            data_modificacao TEXT NOT NULL,
+            data_processamento TEXT NOT NULL
+        )
+    ''')
+    
+    # Tabela para armazenar os pedidos
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pedidos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            numero_pedido TEXT NOT NULL,
+            data TEXT NOT NULL,
+            cliente TEXT NOT NULL,
+            valor_total REAL NOT NULL,
+            produto TEXT NOT NULL,
+            quantidade REAL NOT NULL,
+            cidade TEXT NOT NULL,
+            estado TEXT NOT NULL,
+            telefone TEXT NOT NULL,
+            arquivo_origem TEXT NOT NULL,
+            UNIQUE(numero_pedido, produto)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+def arquivo_foi_processado(nome_arquivo, data_modificacao):
+    """Verifica se um arquivo já foi processado"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT 1 FROM arquivos_processados 
+            WHERE nome_arquivo = ? AND data_modificacao = ?
+        ''', (nome_arquivo, data_modificacao))
+        resultado = cursor.fetchone()
+        return resultado is not None
+    except Exception as e:
+        st.error(f"Erro ao verificar arquivo processado: {e}")
+        return False
+    finally:
+        conn.close()
+
+def marcar_arquivo_processado(nome_arquivo, data_modificacao):
+    """Marca um arquivo como processado"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO arquivos_processados (nome_arquivo, data_modificacao, data_processamento)
+            VALUES (?, ?, ?)
+        ''', (nome_arquivo, data_modificacao, dt.now().isoformat()))
+        conn.commit()
+    except Exception as e:
+        st.error(f"Erro ao marcar arquivo processado: {e}")
+    finally:
+        conn.close()
+
+def salvar_no_banco(df):
+    """Salva os dados no banco de dados"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        df.to_sql('pedidos', conn, if_exists='append', index=False)
+        conn.commit()
+    except Exception as e:
+        st.error(f"Erro ao salvar no banco: {e}")
+    finally:
+        conn.close()
+
+def carregar_do_banco():
+    """Carrega todos os dados do banco de dados"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql("SELECT * FROM pedidos", conn)
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Erro ao carregar do banco: {e}")
+        return pd.DataFrame()
+
+def carregar_do_parquet():
+    """Carrega os dados do arquivo Parquet se existir"""
+    if os.path.exists(PARQUET_PATH):
+        try:
+            return pd.read_parquet(PARQUET_PATH)
+        except Exception as e:
+            st.error(f"Erro ao carregar Parquet: {e}")
+    return pd.DataFrame()
+
+def salvar_em_parquet(df):
+    """Salva os dados em formato Parquet"""
+    try:
+        df.to_parquet(PARQUET_PATH, engine='pyarrow')
+    except Exception as e:
+        st.error(f"Erro ao salvar Parquet: {e}")
+
+def limpar_banco_de_dados():
+    """Limpa o banco de dados (função de manutenção)"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM pedidos")
+        cursor.execute("DELETE FROM arquivos_processados")
+        conn.commit()
+        conn.close()
+        
+        # Remover arquivo Parquet
+        if os.path.exists(PARQUET_PATH):
+            os.remove(PARQUET_PATH)
+            
+        st.success("Banco de dados limpo com sucesso!")
+    except Exception as e:
+        st.error(f"Erro ao limpar banco: {e}")
 
 # ===== FUNÇÕES DE PROCESSAMENTO =====
 
@@ -106,16 +242,16 @@ def process_excel_data(df, file_name):
                             qtd = float(quantidade)
                             if qtd > 0:
                                 pedidos.append({
-                                    "Número do Pedido": numero_pedido,
-                                    "Data": data_pedido,
-                                    "Cliente": cliente,
-                                    "Valor Total Z19-Z24": valor_total_z,
-                                    "Produto": str(produto),
-                                    "Quantidade": qtd,
-                                    "Cidade": cidade,
-                                    "Estado": estado,
-                                    "Telefone": telefone,
-                                    "Arquivo Origem": file_name
+                                    "numero_pedido": numero_pedido,
+                                    "data": data_pedido,
+                                    "cliente": cliente,
+                                    "valor_total": valor_total_z,
+                                    "produto": str(produto),
+                                    "quantidade": qtd,
+                                    "cidade": cidade,
+                                    "estado": estado,
+                                    "telefone": telefone,
+                                    "arquivo_origem": file_name
                                 })
                         except:
                             pass
@@ -127,16 +263,207 @@ def process_excel_data(df, file_name):
     
     return pd.DataFrame(pedidos)
 
+def processar_arquivo(file_info):
+    """Processa um único arquivo"""
+    try:
+        # Baixar arquivo
+        request = service.files().get_media(fileId=file_info['id'])
+        file_content = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_content, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        
+        # Processar arquivo
+        try:
+            df = pd.read_excel(file_content, header=None)
+        except:
+            try:
+                df = pd.read_excel(file_content, header=0)
+            except:
+                try:
+                    df = pd.read_excel(file_content, header=None, skiprows=5)
+                except:
+                    return pd.DataFrame()
+        
+        result = process_excel_data(df, file_info['name'])
+        return result
+    except Exception as e:
+        st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
+        return pd.DataFrame()
+
+def carregar_dados_google_drive():
+    """
+    Função para carregar dados do Google Drive com cache e otimizações
+    """
+    # Verificar se os dados já estão em cache
+    if 'df_dados' in st.session_state and 'ultima_atualizacao' in st.session_state:
+        if (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 3600:
+            return st.session_state.df_dados
+    
+    try:
+        # Inicializar banco de dados se necessário
+        init_db()
+        
+        # Criar container para a interface de carregamento
+        loading_container = st.empty()
+        
+        with loading_container.container():
+            st.markdown("### 🔄 CARREGANDO ARQUIVOS DO GOOGLE DRIVE")
+            
+            # Autenticar com o Google Drive
+            credentials_info = {
+                "type": st.secrets["gcp_service_account"]["type"],
+                "project_id": st.secrets["gcp_service_account"]["project_id"],
+                "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+                "private_key": st.secrets["gcp_service_account"]["private_key"],
+                "client_email": st.secrets["gcp_service_account"]["client_email"],
+                "client_id": st.secrets["gcp_service_account"]["client_id"],
+                "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+                "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+                "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+                "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
+            }
+            
+            creds = service_account.Credentials.from_service_account_info(
+                credentials_info, scopes=SCOPES
+            )
+            
+            service = build('drive', 'v3', credentials=creds)
+            
+            # Listar todos os arquivos (com paginação)
+            query = f"parents in '{FOLDER_ID}' and mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+            page_token = None
+            all_files = []
+            
+            while True:
+                results = service.files().list(
+                    q=query, 
+                    spaces='drive', 
+                    fields='nextPageToken, files(id, name, modifiedTime, size)',
+                    orderBy="modifiedTime desc",
+                    pageToken=page_token
+                ).execute()
+                
+                files = results.get('files', [])
+                all_files.extend(files)
+                
+                page_token = results.get('nextPageToken', None)
+                if not page_token:
+                    break
+            
+            if not all_files:
+                st.warning("Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
+                return pd.DataFrame()
+            
+            st.info(f"Encontrados {len(all_files)} arquivos. Processando...")
+            
+            # Interface de carregamento
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            arquivo_atual_text = st.empty()
+            
+            with st.spinner("CARREGANDO OS ARQUIVOS PELA PRIMEIRA VEZ POR FAVOR AGUARDE"):
+                # Estimar tempo de processamento (agora reduzido pela metade)
+                tempo_estimado_total = (len(all_files) * 3) / 2  # Considerando paralelismo
+                tempo_estimado_text = st.empty()
+                tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_estimado_total//60:.0f} minutos e {tempo_estimado_total%60:.0f} segundos")
+                
+                # Processar cada arquivo (usando threads)
+                all_data = []
+                tempo_inicial = time.time()
+                arquivos_com_erro = 0
+                
+                # Limitar o número de arquivos para processamento inicial
+                arquivos_processar = all_files[:MAX_ARQUIVOS]
+                
+                # Usar ThreadPoolExecutor para processar em paralelo
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    # Submeter todos os arquivos para processamento
+                    future_to_file = {
+                        executor.submit(processar_arquivo, file_info): file_info 
+                        for file_info in arquivos_processar
+                    }
+                    
+                    # Processar resultados à medida que eles ficam prontos
+                    for i, future in enumerate(concurrent.futures.as_completed(future_to_file)):
+                        file_info = future_to_file[future]
+                        
+                        # Atualizar nome do arquivo atual
+                        arquivo_atual_text.text(f"📁 Processando: {file_info['name']}")
+                        
+                        try:
+                            result = future.result()
+                            if not result.empty:
+                                all_data.append(result)
+                        except Exception as e:
+                            arquivos_com_erro += 1
+                            st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
+                            continue
+                        
+                        # Atualizar progresso
+                        progress = (i + 1) / len(arquivos_processar)
+                        progress_bar.progress(progress)
+                        
+                        # Atualizar status
+                        status_text.text(f"Progresso: {i+1}/{len(arquivos_processar)} arquivos ({progress*100:.1f}%)")
+                        
+                        # Atualizar estimativa de tempo restante
+                        tempo_decorrido = time.time() - tempo_inicial
+                        if i > 0:
+                            tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (len(arquivos_processar) - i - 1)
+                            tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_restante_estimado//60:.0f}min {tempo_restante_estimado%60:.0f}s restantes")
+                
+                if all_data:
+                    # Combinar todos os dados
+                    final_df = pd.concat(all_data, ignore_index=True)
+                    
+                    # Remover duplicatas
+                    final_df = final_df.drop_duplicates(subset=['numero_pedido', 'produto'])
+                    
+                    # Salvar no banco de dados
+                    salvar_no_banco(final_df)
+                    
+                    # Salvar em Parquet
+                    salvar_em_parquet(final_df)
+                    
+                    # Salvar em cache
+                    st.session_state.df_dados = final_df
+                    st.session_state.ultima_atualizacao = dt.now()
+                    
+                    # Limpar interface de carregamento
+                    loading_container.empty()
+                    
+                    st.success(f"✅ Processamento concluído! {len(final_df)} pedidos no total")
+                    if arquivos_com_erro > 0:
+                        st.warning(f"⚠️ {arquivos_com_erro} arquivos não puderam ser processados devido a erros")
+                    
+                    return final_df
+                else:
+                    # Limpar interface de carregamento
+                    loading_container.empty()
+                    
+                    st.warning("⚠️ Nenhum dado válido encontrado nos arquivos")
+                    return pd.DataFrame()
+                    
+    except Exception as e:
+        # Limpar interface de carregamento
+        if 'loading_container' in locals():
+            loading_container.empty()
+        
+        st.error(f"Erro ao carregar dados do Google Drive: {e}")
+        return pd.DataFrame()
+
 def verificar_duplicatas(df):
-    duplicatas = df[df.duplicated(subset=['Número do Pedido'], keep=False)]
+    duplicatas = df[df.duplicated(subset=['numero_pedido'], keep=False)]
     
     if not duplicatas.empty:
         st.warning(f"Foram encontradas {len(duplicatas)} duplicatas!")
         
         with st.expander("Ver Duplicatas"):
-            st.dataframe(duplicatas[["Número do Pedido", "Data", "Cliente", "Valor Total Z19-Z24"]])
+            st.dataframe(duplicatas[["numero_pedido", "data", "cliente", "valor_total"]])
         
-        st.caption(f"Total de pedidos: {len(df)} | Pedidos únicos: {len(df.drop_duplicates(subset=['Número do Pedido']))} | Duplicatas: {len(duplicatas)}")
+        st.caption(f"Total de pedidos: {len(df)} | Pedidos únicos: {len(df.drop_duplicates(subset=['numero_pedido']))} | Duplicatas: {len(duplicatas)}")
         return True
     else:
         st.success("✅ Nenhuma duplicata encontrada!")
@@ -209,14 +536,14 @@ def classificar_produto(descricao):
         return "PEÇAS AVULSAS"
 
 def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
-    df_periodo = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
-    df_periodo = df_periodo.drop_duplicates(subset=['Número do Pedido'])
+    df_periodo = df[(df["data"] >= inicio_meta) & (df["data"] <= fim_meta)].copy()
+    df_periodo = df_periodo.drop_duplicates(subset=['numero_pedido'])
     
-    valor_total_vendido = df_periodo["Valor Total Z19-Z24"].sum()
-    df_periodo["Categoria"] = df_periodo["Produto"].apply(classificar_produto)
+    valor_total_vendido = df_periodo["valor_total"].sum()
+    df_periodo["Categoria"] = df_periodo["produto"].apply(classificar_produto)
     
-    valor_kit_ar = df_periodo[df_periodo["Categoria"] == "KITS AR"]["Valor Total Z19-Z24"].sum()
-    valor_pecas_avulsas = df_periodo[df_periodo["Categoria"].isin(["PEÇAS AVULSAS", "KITS ROSCA"])]["Valor Total Z19-Z24"].sum()
+    valor_kit_ar = df_periodo[df_periodo["Categoria"] == "KITS AR"]["valor_total"].sum()
+    valor_pecas_avulsas = df_periodo[df_periodo["Categoria"].isin(["PEÇAS AVULSAS", "KITS ROSCA"])]["valor_total"].sum()
     
     percentual_kit_ar = 0.007
     percentual_pecas_avulsas = 0.005
@@ -254,9 +581,9 @@ def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
     return resultados, valor_total_vendido, meta_atingida
 
 def identificar_lojistas_recuperar(df):
-    pedidos_por_cliente = df.groupby('Cliente').size().reset_index(name='num_pedidos')
-    ultima_compra = df.groupby('Cliente')['Data'].max().reset_index(name='ultima_compra')
-    clientes_info = pd.merge(pedidos_por_cliente, ultima_compra, on='Cliente')
+    pedidos_por_cliente = df.groupby('cliente').size().reset_index(name='num_pedidos')
+    ultima_compra = df.groupby('cliente')['data'].max().reset_index(name='ultima_compra')
+    clientes_info = pd.merge(pedidos_por_cliente, ultima_compra, on='cliente')
     
     hoje = dt.now()
     clientes_info['meses_sem_comprar'] = (hoje - clientes_info['ultima_compra']).dt.days / 30
@@ -267,193 +594,43 @@ def identificar_lojistas_recuperar(df):
     ]
     
     if not lojistas_recuperar.empty:
-        lojistas_completos = df.sort_values('Data').drop_duplicates(subset=['Cliente'], keep='last')
+        lojistas_completos = df.sort_values('data').drop_duplicates(subset=['cliente'], keep='last')
         lojistas_recuperar = pd.merge(
-            lojistas_recuperar[['Cliente', 'num_pedidos', 'ultima_compra', 'meses_sem_comprar']], 
+            lojistas_recuperar[['cliente', 'num_pedidos', 'ultima_compra', 'meses_sem_comprar']], 
             lojistas_completos, 
-            on='Cliente'
+            on='cliente'
         )
         return lojistas_recuperar
     
     return pd.DataFrame()
 
 def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
-    df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
+    df_meta = df[(df["data"] >= inicio_meta) & (df["data"] <= fim_meta)].copy()
     
     if df_meta.empty:
         return pd.DataFrame()
     
-    df_meta = df_meta.drop_duplicates(subset=['Número do Pedido'], keep='first')
-    tabela = df_meta[["Data", "Número do Pedido", "Cliente", "Valor Total Z19-Z24"]].copy()
-    tabela.columns = ["Data do Pedido", "Número do Pedido", "Nome do Cliente", "Valor do Pedido"]
-    tabela["Data do Pedido"] = tabela["Data do Pedido"].dt.strftime("%d/%m/%Y")
-    tabela = tabela.sort_values("Data do Pedido")
+    df_meta = df_meta.drop_duplicates(subset=['numero_pedido'], keep='first')
+    tabela = df_meta[["data", "numero_pedido", "cliente", "valor_total"]].copy()
+    tabela.columns = ["data_pedido", "numero_pedido", "cliente", "valor_pedido"]
+    tabela["data_pedido"] = tabela["data_pedido"].dt.strftime("%d/%m/%Y")
+    tabela = tabela.sort_values("data_pedido")
     
     return tabela
 
-# ===== FUNÇÃO PRINCIPAL DE CARREGAMENTO =====
-
-def carregar_dados_google_drive():
-    """
-    Função para carregar dados do Google Drive com cache
-    """
-    # Verificar se os dados já estão em cache
-    if 'df_dados' in st.session_state and 'ultima_atualizacao' in st.session_state:
-        # Verificar se o cache é recente (menos de 1 hora)
-        if st.session_state.ultima_atualizacao is not None:
-            if (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 3600:
-                return st.session_state.df_dados
-    
+def atualizar_dados_background():
+    """Atualiza os dados em segundo plano"""
     try:
-        # Criar container para a interface de carregamento
-        loading_container = st.empty()
+        # Carregar dados do Google Drive (apenas arquivos novos)
+        df_novos = carregar_dados_google_drive()
         
-        with loading_container.container():
-            st.markdown("### 🔄 CARREGANDO ARQUIVOS DO GOOGLE DRIVE")
-            
-            # Autenticar com o Google Drive
-            credentials_info = {
-                "type": st.secrets["gcp_service_account"]["type"],
-                "project_id": st.secrets["gcp_service_account"]["project_id"],
-                "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-                "private_key": st.secrets["gcp_service_account"]["private_key"],
-                "client_email": st.secrets["gcp_service_account"]["client_email"],
-                "client_id": st.secrets["gcp_service_account"]["client_id"],
-                "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-                "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-                "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-                "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
-            }
-            
-            creds = service_account.Credentials.from_service_account_info(
-                credentials_info, scopes=SCOPES
-            )
-            
-            service = build('drive', 'v3', credentials=creds)
-            
-            # Listar todos os arquivos (com paginação)
-            query = f"parents in '{FOLDER_ID}' and mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
-            page_token = None
-            all_files = []
-            
-            while True:
-                results = service.files().list(
-                    q=query, 
-                    spaces='drive', 
-                    fields='nextPageToken, files(id, name, modifiedTime, size)',
-                    orderBy="modifiedTime desc",
-                    pageToken=page_token
-                ).execute()
-                
-                files = results.get('files', [])
-                all_files.extend(files)
-                
-                page_token = results.get('nextPageToken', None)
-                if not page_token:
-                    break
-            
-            if not all_files:
-                st.warning("Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
-                return pd.DataFrame()
-            
-            st.info(f"Encontrados {len(all_files)} arquivos. Processando...")
-            
-            # Interface de carregamento
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            arquivo_atual_text = st.empty()
-            
-            with st.spinner("CARREGANDO OS ARQUIVOS PELA PRIMEIRA VEZ POR FAVOR AGUARDE"):
-                # Estimar tempo de processamento (aproximadamente 3 segundos por arquivo)
-                tempo_estimado_total = len(all_files) * 3
-                tempo_estimado_text = st.empty()
-                tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_estimado_total//60:.0f} minutos e {tempo_estimado_total%60:.0f} segundos")
-                
-                # Processar cada arquivo
-                all_data = []
-                tempo_inicial = time.time()
-                arquivos_com_erro = 0
-                
-                for i, file_info in enumerate(all_files):
-                    # Atualizar nome do arquivo atual
-                    arquivo_atual_text.text(f"📁 Processando: {file_info['name']}")
-                    
-                    try:
-                        # Baixar arquivo
-                        request = service.files().get_media(fileId=file_info['id'])
-                        file_content = io.BytesIO()
-                        downloader = MediaIoBaseDownload(file_content, request)
-                        done = False
-                        while not done:
-                            status, done = downloader.next_chunk()
-                        
-                        # Processar arquivo
-                        try:
-                            df = pd.read_excel(file_content, header=None)
-                        except:
-                            try:
-                                df = pd.read_excel(file_content, header=0)
-                            except:
-                                try:
-                                    df = pd.read_excel(file_content, header=None, skiprows=5)
-                                except Exception as e:
-                                    arquivos_com_erro += 1
-                                    continue
-                        
-                        result = process_excel_data(df, file_info['name'])
-                        if not result.empty:
-                            all_data.append(result)
-                        
-                        # Atualizar progresso
-                        progress = (i + 1) / len(all_files)
-                        progress_bar.progress(progress)
-                        
-                        # Atualizar status
-                        status_text.text(f"Progresso: {i+1}/{len(all_files)} arquivos ({progress*100:.1f}%)")
-                        
-                        # Atualizar estimativa de tempo restante
-                        tempo_decorrido = time.time() - tempo_inicial
-                        if i > 0:
-                            tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (len(all_files) - i - 1)
-                            tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_restante_estimado//60:.0f}min {tempo_restante_estimado%60:.0f}s restantes")
-                        
-                    except Exception as e:
-                        arquivos_com_erro += 1
-                        continue
-                
-                if all_data:
-                    # Combinar todos os dados
-                    final_df = pd.concat(all_data, ignore_index=True)
-                    
-                    # Remover duplicatas
-                    final_df = final_df.drop_duplicates(subset=['Número do Pedido', 'Data'])
-                    
-                    # Salvar em cache
-                    st.session_state.df_dados = final_df
-                    st.session_state.ultima_atualizacao = dt.now()
-                    
-                    # Limpar interface de carregamento
-                    loading_container.empty()
-                    
-                    st.success(f"✅ Processamento concluído! {len(final_df)} pedidos no total")
-                    if arquivos_com_erro > 0:
-                        st.warning(f"⚠️ {arquivos_com_erro} arquivos não puderam ser processados devido a erros")
-                    
-                    return final_df
-                else:
-                    # Limpar interface de carregamento
-                    loading_container.empty()
-                    
-                    st.warning("⚠️ Nenhum dado válido encontrado nos arquivos")
-                    return pd.DataFrame()
-                    
+        if not df_novos.empty:
+            # Atualizar cache
+            st.session_state.df_dados = df_novos
+            st.session_state.ultima_atualizacao = dt.now()
+            st.success("✅ Dados atualizados em background!")
     except Exception as e:
-        # Limpar interface de carregamento
-        if 'loading_container' in locals():
-            loading_container.empty()
-        
-        st.error(f"Erro ao carregar dados do Google Drive: {e}")
-        return pd.DataFrame()
+        st.error(f"Erro na atualização em background: {e}")
 
 # ===== CONFIGURAÇÃO INICIAL =====
 
@@ -462,6 +639,29 @@ if 'df_dados' not in st.session_state:
     st.session_state.df_dados = pd.DataFrame()
 if 'ultima_atualizacao' not in st.session_state:
     st.session_state.ultima_atualizacao = None
+
+# Inicializar banco de dados
+init_db()
+
+# Iniciar scheduler em background
+if 'scheduler' not in st.session_state:
+    st.session_state.scheduler = BackgroundScheduler()
+    st.session_state.scheduler.add_job(atualizar_dados_background, 'interval', hours=6)
+    st.session_state.scheduler.start()
+
+# Carregar dados do banco ou Parquet se existirem
+if st.session_state.df_dados.empty:
+    # Tentar carregar do Parquet primeiro (mais rápido)
+    df_parquet = carregar_do_parquet()
+    if not df_parquet.empty:
+        st.session_state.df_dados = df_parquet
+        st.session_state.ultima_atualizacao = dt.now()
+    else:
+        # Tentar carregar do banco
+        df_banco = carregar_do_banco()
+        if not df_banco.empty:
+            st.session_state.df_dados = df_banco
+            st.session_state.ultima_atualizacao = dt.now()
 
 try:
     estados_df = pd.read_csv("estados.csv")
@@ -682,12 +882,60 @@ if st.sidebar.button("🔄 Recarregar Dados"):
         del st.session_state.ultima_atualizacao
     st.rerun()
 
+# Status do banco de dados
+st.sidebar.markdown("### 💾 STATUS BANCO DE DADOS")
+try:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM pedidos")
+    total_pedidos = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM arquivos_processados")
+    arquivos_processados = cursor.fetchone()[0]
+    conn.close()
+    
+    st.sidebar.success(f"✅ Banco de dados ativo")
+    st.sidebar.caption(f"📊 {total_pedidos} pedidos armazenados")
+    st.sidebar.caption(f"📁 {arquivos_processados} arquivos processados")
+except Exception as e:
+    st.sidebar.error(f"❌ Erro no banco: {e}")
+
+# Botão para exportar dados do banco
+if st.sidebar.button("💾 Exportar Banco de Dados"):
+    df_banco = carregar_do_banco()
+    if not df_banco.empty:
+        csv = df_banco.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download CSV Completo",
+            data=csv,
+            file_name='banco_de_dados_completo.csv',
+            mime='text/csv'
+        )
+
+# Botão para limpar banco
+limpar_banco_de_dados()
+
 st.sidebar.markdown('</div>', unsafe_allow_html=True)
+
+# ===== CONTEÚDO PRINCIPAL =====
 
 # Carregar dados
 df = carregar_dados_google_drive()
 
 if not df.empty:
+    # Renomear colunas para compatibilidade
+    df = df.rename(columns={
+        'numero_pedido': 'Número do Pedido',
+        'data': 'Data',
+        'cliente': 'Cliente',
+        'valor_total': 'Valor Total Z19-Z24',
+        'produto': 'Produto',
+        'quantidade': 'Quantidade',
+        'cidade': 'Cidade',
+        'estado': 'Estado',
+        'telefone': 'Telefone',
+        'arquivo_origem': 'Arquivo Origem'
+    })
+    
     st.sidebar.success("✅ Conectado ao Google Drive")
     st.sidebar.caption(f"📁 {len(df)} pedidos carregados")
     if 'ultima_atualizacao' in st.session_state:
@@ -695,8 +943,6 @@ if not df.empty:
 else:
     st.sidebar.error("❌ Erro na conexão")
     st.sidebar.caption("Verifique a autenticação")
-
-# ===== CONTEÚDO PRINCIPAL =====
 
 if not df.empty:
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
@@ -1274,24 +1520,8 @@ if not df.empty:
         ganhos_totais = resultados.iloc[-1, 1]
         st.markdown(f'<div class="ganhos-valor">R$ {ganhos_totais:,.2f}</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-        
-        with st.expander("Regras de Cálculo"):
-            st.markdown("""
-            ### Percentuais de Comissão:
-            - **KIT AR**: 0.7% (calculado para qualquer valor de vendas)
-            - **Peças Avulsas e Kit Rosca**: 0.5% (calculado para qualquer valor de vendas)
-            
-            ### Bônus:
-            - **Bônus por Volume**: R$ 200,00 a cada R$ 50.000,00 vendido
-            - **Prêmio Meta Mensal**: R$ 600,00 (se meta de R$ 200.000,00 for atingida)
-            
-            ### Cálculo dos Novos Campos:
-            - **Quanto deveria estar**: Valor esperado com base no progresso dos dias úteis
-            - **Dias Úteis Faltantes**: Contagem de dias úteis restantes (excluindo sábados e domingos)
-            - **Quanto deve vender por dia**: Valor necessário para atingir a meta nos dias úteis restantes
-            """)
-
+ 
 else:
     st.warning("⚠️ Nenhum dado disponível. Verifique a configuração do Google Drive.")
-
+ 
 st.markdown('<div class="creditos">developed by @joao_vendascastor</div>', unsafe_allow_html=True)
