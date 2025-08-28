@@ -372,6 +372,7 @@ def carregar_dados_google_drive():
                 # Processar cada arquivo
                 all_data = []
                 tempo_inicial = time.time()
+                arquivos_com_erro = 0
                 
                 for i, file_info in enumerate(all_files):
                     # Atualizar nome do arquivo atual
@@ -396,6 +397,7 @@ def carregar_dados_google_drive():
                                 try:
                                     df = pd.read_excel(file_content, header=None, skiprows=5)
                                 except Exception as e:
+                                    arquivos_com_erro += 1
                                     continue
                         
                         result = process_excel_data(df, file_info['name'])
@@ -416,6 +418,7 @@ def carregar_dados_google_drive():
                             tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_restante_estimado//60:.0f}min {tempo_restante_estimado%60:.0f}s restantes")
                         
                     except Exception as e:
+                        arquivos_com_erro += 1
                         continue
                 
                 if all_data:
@@ -433,6 +436,9 @@ def carregar_dados_google_drive():
                     loading_container.empty()
                     
                     st.success(f"✅ Processamento concluído! {len(final_df)} pedidos no total")
+                    if arquivos_com_erro > 0:
+                        st.warning(f"⚠️ {arquivos_com_erro} arquivos não puderam ser processados devido a erros")
+                    
                     return final_df
                 else:
                     # Limpar interface de carregamento
