@@ -21,144 +21,171 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-
+import duckdb
+ 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+ 
 # Bibliotecas Google
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
-
-# Novas bibliotecas
-import sqlite3
-import pyarrow.parquet as pq
-
+ 
 # ===== CONFIGURAÇÃO =====
 FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-DB_PATH = 'pedidos.db'
+DB_PATH = 'pedidos.duckdb'  # Agora usando DuckDB
 PARQUET_PATH = 'pedidos.parquet'
 TAMANHO_LOTE = 50  # Processar em lotes menores para atualizações mais rápidas
 TAMANHO_LOTE_INICIAL = 200  # Número de arquivos para inicialização rápida
-
+ 
 # ===== FUNÇÕES AUXILIARES =====
-
+ 
 def extrair_numero_pedido(nome_arquivo):
     """Extrai o número do pedido do nome do arquivo"""
     match = re.search(r'PVLJO-(\d+)', nome_arquivo)
     if match:
         return int(match.group(1))
     return 0
-
-# ===== FUNÇÕES DE BANCO DE DADOS =====
-
+ 
+# ===== FUNÇÕES DE BANCO DE DADOS (DUCKDB) =====
+ 
 def init_db():
-    """Inicializa o banco de dados SQLite"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    """Inicializa o banco de dados DuckDB"""
+    # Criar diretório se não existir
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    
+    conn = duckdb.connect(DB_PATH)
     
     # Tabela para registrar arquivos processados
-    cursor.execute('''
+    conn.execute('''
         CREATE TABLE IF NOT EXISTS arquivos_processados (
-            nome_arquivo TEXT PRIMARY KEY,
-            data_modificacao TEXT NOT NULL,
-            data_processamento TEXT NOT NULL
+            nome_arquivo VARCHAR PRIMARY KEY,
+            data_modificacao TIMESTAMP NOT NULL,
+            data_processamento TIMESTAMP NOT NULL
         )
     ''')
     
     # Tabela para armazenar os pedidos
-    cursor.execute('''
+    conn.execute('''
         CREATE TABLE IF NOT EXISTS pedidos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            numero_pedido TEXT NOT NULL,
-            data TEXT NOT NULL,
-            cliente TEXT NOT NULL,
-            valor_total REAL NOT NULL,
-            produto TEXT NOT NULL,
-            quantidade REAL NOT NULL,
-            cidade TEXT NOT NULL,
-            estado TEXT NOT NULL,
-            telefone TEXT NOT NULL,
-            arquivo_origem TEXT NOT NULL,
+            numero_pedido VARCHAR NOT NULL,
+            data DATE NOT NULL,
+            cliente VARCHAR NOT NULL,
+            valor_total DECIMAL(15,2) NOT NULL,
+            produto VARCHAR NOT NULL,
+            quantidade DECIMAL(10,2) NOT NULL,
+            cidade VARCHAR NOT NULL,
+            estado VARCHAR NOT NULL,
+            telefone VARCHAR NOT NULL,
+            arquivo_origem VARCHAR NOT NULL,
             UNIQUE(numero_pedido, produto)
         )
     ''')
     
-    conn.commit()
+    # Criar índices para melhor performance
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_pedidos_data ON pedidos(data)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_pedidos_cliente ON pedidos(cliente)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_arquivos_nome ON arquivos_processados(nome_arquivo)')
+    
     conn.close()
-
+ 
 def arquivo_foi_processado(nome_arquivo, data_modificacao):
     """Verifica se um arquivo já foi processado"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('''
+        conn = duckdb.connect(DB_PATH)
+        result = conn.execute('''
             SELECT 1 FROM arquivos_processados 
             WHERE nome_arquivo = ? AND data_modificacao = ?
-        ''', (nome_arquivo, data_modificacao))
-        resultado = cursor.fetchone()
-        return resultado is not None
+        ''', (nome_arquivo, data_modificacao)).fetchone()
+        return result is not None
     except Exception as e:
         st.error(f"Erro ao verificar arquivo processado: {e}")
         return False
     finally:
         conn.close()
-
+ 
 def marcar_arquivo_processado(nome_arquivo, data_modificacao):
     """Marca um arquivo como processado"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('''
+        conn = duckdb.connect(DB_PATH)
+        conn.execute('''
             INSERT OR REPLACE INTO arquivos_processados (nome_arquivo, data_modificacao, data_processamento)
             VALUES (?, ?, ?)
-        ''', (nome_arquivo, data_modificacao, dt.now().isoformat()))
+        ''', (nome_arquivo, data_modificacao, dt.now()))
         conn.commit()
     except Exception as e:
         st.error(f"Erro ao marcar arquivo processado: {e}")
     finally:
         conn.close()
-
+ 
 def salvar_no_banco_batch(df):
-    """Salva os dados no banco de dados em batch"""
+    """Salva os dados no banco de dados DuckDB em batch"""
     if df.empty:
         return
     
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = duckdb.connect(DB_PATH)
         
         # Remove duplicatas dentro do DataFrame
         df = df.drop_duplicates(subset=['numero_pedido', 'produto'])
         
-        # Insere em batch
-        df.to_sql(
-            "pedidos", 
-            conn, 
-            if_exists="append", 
-            index=False, 
-            method="multi"
-        )
+        # Insere em batch usando COPY FROM para melhor performance
+        # Primeiro, salvar em CSV temporário
+        temp_csv = 'temp_pedidos.csv'
+        df.to_csv(temp_csv, index=False, header=False)
+        
+        # Usar COPY FROM para inserir dados em massa
+        conn.execute(f'''
+            COPY pedidos FROM '{temp_csv}' 
+            (DELIMITER ',', HEADER false)
+        ''')
+        
+        # Remover arquivo temporário
+        if os.path.exists(temp_csv):
+            os.remove(temp_csv)
         
         conn.commit()
-        conn.close()
         
     except Exception as e:
         st.error(f"Erro ao salvar no banco em batch: {e}")
-
+        # Fallback para inserção linha a linha se o CSV falhar
+        try:
+            for _, row in df.iterrows():
+                conn.execute('''
+                    INSERT OR IGNORE INTO pedidos 
+                    (numero_pedido, data, cliente, valor_total, produto, quantidade, cidade, estado, telefone, arquivo_origem)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    row['numero_pedido'], row['data'], row['cliente'], row['valor_total'],
+                    row['produto'], row['quantidade'], row['cidade'], row['estado'],
+                    row['telefone'], row['arquivo_origem']
+                ))
+            conn.commit()
+        except Exception as e2:
+            st.error(f"Erro no fallback de inserção: {e2}")
+    finally:
+        conn.close()
+ 
 def carregar_do_banco():
-    """Carrega todos os dados do banco de dados"""
+    """Carrega todos os dados do banco de dados DuckDB"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql("SELECT * FROM pedidos", conn)
+        conn = duckdb.connect(DB_PATH)
+        # Usar SQL para melhor performance
+        df = conn.execute('''
+            SELECT numero_pedido, data, cliente, valor_total, produto, 
+                   quantidade, cidade, estado, telefone, arquivo_origem
+            FROM pedidos
+            ORDER BY data DESC
+        ''').fetchdf()
         conn.close()
         return df
     except Exception as e:
         st.error(f"Erro ao carregar do banco: {e}")
         return pd.DataFrame()
-
+ 
 def carregar_do_parquet():
     """Carrega os dados do arquivo Parquet se existir"""
     if os.path.exists(PARQUET_PATH):
@@ -167,21 +194,20 @@ def carregar_do_parquet():
         except Exception as e:
             st.error(f"Erro ao carregar Parquet: {e}")
     return pd.DataFrame()
-
+ 
 def salvar_em_parquet(df):
     """Salva os dados em formato Parquet"""
     try:
         df.to_parquet(PARQUET_PATH, engine='pyarrow')
     except Exception as e:
         st.error(f"Erro ao salvar Parquet: {e}")
-
+ 
 def limpar_banco_de_dados():
-    """Limpa o banco de dados (função de manutenção)"""
+    """Limpa o banco de dados DuckDB (função de manutenção)"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM pedidos")
-        cursor.execute("DELETE FROM arquivos_processados")
+        conn = duckdb.connect(DB_PATH)
+        conn.execute("DELETE FROM pedidos")
+        conn.execute("DELETE FROM arquivos_processados")
         conn.commit()
         conn.close()
         
@@ -198,9 +224,9 @@ def limpar_banco_de_dados():
         st.success("Banco de dados limpo com sucesso!")
     except Exception as e:
         st.error(f"Erro ao limpar banco: {e}")
-
+ 
 # ===== FUNÇÕES DE PROCESSAMENTO =====
-
+ 
 @st.cache_data(ttl=3600)
 def process_excel_data(df, file_name):
     """Processa os dados de um arquivo Excel de forma otimizada"""
@@ -295,7 +321,7 @@ def process_excel_data(df, file_name):
         st.error(f"Erro ao processar arquivo {file_name}: {e}")
     
     return pd.DataFrame(pedidos)
-
+ 
 def processar_arquivo(file_info, service):
     """Processa um único arquivo de forma otimizada"""
     try:
@@ -333,7 +359,7 @@ def processar_arquivo(file_info, service):
     except Exception as e:
         st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
         return pd.DataFrame()
-
+ 
 def processar_lote_paralelo(lote, service):
     """Processa um lote de arquivos em paralelo"""
     df_todos = pd.DataFrame()
@@ -355,7 +381,7 @@ def processar_lote_paralelo(lote, service):
     except Exception as e:
         st.error(f"Erro ao processar lote em paralelo: {e}")
         return pd.DataFrame()
-
+ 
 def processar_arquivos_restantes(arquivos_restantes, service):
     """Processa os arquivos restantes em background"""
     try:
@@ -384,7 +410,7 @@ def processar_arquivos_restantes(arquivos_restantes, service):
         
     except Exception as e:
         logger.error(f"Erro ao processar arquivos restantes: {str(e)}", exc_info=True)
-
+ 
 def carregar_dados_google_drive():
     """
     Função para carregar dados do Google Drive com processamento incremental e exibição rápida
@@ -506,7 +532,9 @@ def carregar_dados_google_drive():
             st.error(f"Erro ao carregar dados do Google Drive: {e}")
             logger.error(f"Erro no carregamento: {str(e)}", exc_info=True)
             return pd.DataFrame()
-
+ 
+# ===== FUNÇÕES DE ANÁLISE E VISUALIZAÇÃO =====
+ 
 def verificar_duplicatas(df):
     duplicatas = df[df.duplicated(subset=['numero_pedido'], keep=False)]
     
@@ -522,13 +550,13 @@ def verificar_duplicatas(df):
         st.success("✅ Nenhuma duplicata encontrada!")
         st.caption(f"Total de pedidos: {len(df)} | Todos são únicos")
         return False
-
+ 
 def normalize_text(text):
     if pd.isna(text):
         return ""
     text = ''.join(c for c in unicodedata.normalize('NFD', str(text)) if unicodedata.category(c) != 'Mn')
     return text.strip().upper()
-
+ 
 def find_closest_city_with_state(city, state, city_list, municipios_df, estados_df, threshold=70):
     if not city or city == "DESCONHECIDO":
         return None, None, None
@@ -562,13 +590,13 @@ def find_closest_city_with_state(city, state, city_list, municipios_df, estados_
             return matched_city, city_info.iloc[0]['latitude'], city_info.iloc[0]['longitude']
     
     return None, None, None
-
+ 
 def get_estado_codigo(estado_normalizado, estados_df):
     estado_info = estados_df[estados_df['uf_normalizado'] == estado_normalizado]
     if not estado_info.empty:
         return estado_info.iloc[0]['codigo_uf']
     return None
-
+ 
 def get_week(data, start_date, end_date):
     total_days = (end_date - start_date).days + 1
     if total_days <= 0 or data < start_date or data > end_date:
@@ -576,7 +604,7 @@ def get_week(data, start_date, end_date):
     days_since_start = (data - start_date).days
     week = ((days_since_start * 4) // total_days) + 1 if days_since_start >= 0 else 0
     return min(max(week, 1), 4)
-
+ 
 def classificar_produto(descricao):
     kits_ar = ["KIT 1", "KIT 2", "KIT 3", "KIT 4", "KIT 5", "KIT 6", "KIT 7", 
                "KIT UNIVERSAL", "KIT UPGRADE", "KIT AIR RIDE 4C", "KIT K3", "KIT K4", "KIT K5"]
@@ -587,101 +615,148 @@ def classificar_produto(descricao):
         return "KITS ROSCA"
     else:
         return "PEÇAS AVULSAS"
-
+ 
 def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
-    df_periodo = df[(df["data"] >= inicio_meta) & (df["data"] <= fim_meta)].copy()
-    df_periodo = df_periodo.drop_duplicates(subset=['numero_pedido'])
-    
-    valor_total_vendido = df_periodo["valor_total"].sum()
-    df_periodo["Categoria"] = df_periodo["produto"].apply(classificar_produto)
-    
-    valor_kit_ar = df_periodo[df_periodo["Categoria"] == "KITS AR"]["valor_total"].sum()
-    valor_pecas_avulsas = df_periodo[df_periodo["Categoria"].isin(["PEÇAS AVULSAS", "KITS ROSCA"])]["valor_total"].sum()
-    
-    percentual_kit_ar = 0.007
-    percentual_pecas_avulsas = 0.005
-    
-    comissao_kit_ar = valor_kit_ar * percentual_kit_ar
-    comissao_pecas_avulsas = valor_pecas_avulsas * percentual_pecas_avulsas
-    
-    bonus = 0
-    valor_por_bonus = 200
-    quantidade_bonus = int(valor_total_vendido // 50000)
-    bonus = quantidade_bonus * valor_por_bonus
-    
-    meta_atingida = valor_total_vendido >= 200000
-    premio_meta = 600 if meta_atingida else 0
-    
-    ganhos_totais = comissao_kit_ar + comissao_pecas_avulsas + bonus + premio_meta
-    
-    resultados = pd.DataFrame({
-        "Descrição": [
-            "Comissão de KIT AR (0.7%)",
-            "Comissão de Peças Avulsas e Kit Rosca (0.5%)",
-            "Bônus (R$ 200,00 a cada 50 mil vendido)",
-            "Prêmio Meta Mensal (se atingida)",
-            "Ganhos Estimados"
-        ],
-        "Valor (R$)": [
-            comissao_kit_ar,
-            comissao_pecas_avulsas,
-            bonus,
-            premio_meta,
-            ganhos_totais
-        ]
-    })
-    
-    return resultados, valor_total_vendido, meta_atingida
-
+    # Usar DuckDB para consultas mais rápidas
+    try:
+        conn = duckdb.connect()
+        conn.register('df', df)
+        
+        # Consulta SQL para filtrar e calcular
+        query = f'''
+            SELECT 
+                SUM(CASE WHEN produto LIKE 'KIT%' AND produto NOT LIKE '%KIT ROSCA%' THEN valor_total ELSE 0 END) as valor_kit_ar,
+                SUM(CASE WHEN produto IN ('PEÇAS AVULSAS', 'KITS ROSCA') THEN valor_total ELSE 0 END) as valor_pecas_avulsas,
+                COUNT(DISTINCT numero_pedido) as pedidos_unicos
+            FROM df 
+            WHERE data BETWEEN '{inicio_meta.date()}' AND '{fim_meta.date()}'
+        '''
+        
+        result = conn.execute(query).fetchdf()
+        conn.close()
+        
+        if result.empty:
+            return pd.DataFrame(), 0, False
+        
+        valor_kit_ar = result.iloc[0]['valor_kit_ar']
+        valor_pecas_avulsas = result.iloc[0]['valor_pecas_avulsas']
+        valor_total_vendido = valor_kit_ar + valor_pecas_avulsas
+        
+        percentual_kit_ar = 0.007
+        percentual_pecas_avulsas = 0.005
+        
+        comissao_kit_ar = valor_kit_ar * percentual_kit_ar
+        comissao_pecas_avulsas = valor_pecas_avulsas * percentual_pecas_avulsas
+        
+        bonus = 0
+        valor_por_bonus = 200
+        quantidade_bonus = int(valor_total_vendido // 50000)
+        bonus = quantidade_bonus * valor_por_bonus
+        
+        meta_atingida = valor_total_vendido >= 200000
+        premio_meta = 600 if meta_atingida else 0
+        
+        ganhos_totais = comissao_kit_ar + comissao_pecas_avulsas + bonus + premio_meta
+        
+        resultados = pd.DataFrame({
+            "Descrição": [
+                "Comissão de KIT AR (0.7%)",
+                "Comissão de Peças Avulsas e Kit Rosca (0.5%)",
+                "Bônus (R$ 200,00 a cada 50 mil vendido)",
+                "Prêmio Meta Mensal (se atingida)",
+                "Ganhos Estimados"
+            ],
+            "Valor (R$)": [
+                comissao_kit_ar,
+                comissao_pecas_avulsas,
+                bonus,
+                premio_meta,
+                ganhos_totais
+            ]
+        })
+        
+        return resultados, valor_total_vendido, meta_atingida
+        
+    except Exception as e:
+        st.error(f"Erro ao calcular comissões: {e}")
+        return pd.DataFrame(), 0, False
+ 
 def identificar_lojistas_recuperar(df):
-    pedidos_por_cliente = df.groupby('cliente').size().reset_index(name='num_pedidos')
-    ultima_compra = df.groupby('cliente')['data'].max().reset_index(name='ultima_compra')
-    clientes_info = pd.merge(pedidos_por_cliente, ultima_compra, on='cliente')
-    
-    hoje = dt.now()
-    clientes_info['meses_sem_comprar'] = (hoje - clientes_info['ultima_compra']).dt.days / 30
-    
-    lojistas_recuperar = clientes_info[
-        (clientes_info['num_pedidos'] > 3) & 
-        (clientes_info['meses_sem_comprar'] > 3)
-    ]
-    
-    if not lojistas_recuperar.empty:
-        lojistas_completos = df.sort_values('data').drop_duplicates(subset=['cliente'], keep='last')
-        lojistas_recuperar = pd.merge(
-            lojistas_recuperar[['cliente', 'num_pedidos', 'ultima_compra', 'meses_sem_comprar']], 
-            lojistas_completos, 
-            on='cliente'
-        )
-        return lojistas_recuperar
-    
-    return pd.DataFrame()
-
-def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
-    df_meta = df[(df["data"] >= inicio_meta) & (df["data"] <= fim_meta)].copy()
-    
-    if df_meta.empty:
+    try:
+        conn = duckdb.connect()
+        conn.register('df', df)
+        
+        # Consulta SQL para identificar lojistas
+        query = '''
+            SELECT 
+                cliente,
+                COUNT(*) as num_pedidos,
+                MAX(data) as ultima_compra
+            FROM df 
+            GROUP BY cliente
+            HAVING COUNT(*) > 3 AND 
+                   (CURRENT_DATE - MAX(data)) / 30 > 3
+        '''
+        
+        lojistas = conn.execute(query).fetchdf()
+        conn.close()
+        
+        if not lojistas.empty:
+            # Juntar com dados completos do último pedido
+            df_completo = df.sort_values('data').drop_duplicates(subset=['cliente'], keep='last')
+            lojistas_recuperar = pd.merge(
+                lojistas[['cliente', 'num_pedidos', 'ultima_compra']], 
+                df_completo, 
+                on='cliente'
+            )
+            return lojistas_recuperar
+        
         return pd.DataFrame()
-    
-    df_meta = df_meta.drop_duplicates(subset=['numero_pedido'], keep='first')
-    tabela = df_meta[["data", "numero_pedido", "cliente", "valor_total"]].copy()
-    tabela.columns = ["data_pedido", "numero_pedido", "cliente", "valor_pedido"]
-    tabela["data_pedido"] = tabela["data_pedido"].dt.strftime("%d/%m/%Y")
-    tabela = tabela.sort_values("data_pedido")
-    
-    return tabela
-
+        
+    except Exception as e:
+        st.error(f"Erro ao identificar lojistas: {e}")
+        return pd.DataFrame()
+ 
+def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
+    try:
+        conn = duckdb.connect()
+        conn.register('df', df)
+        
+        # Consulta SQL para gerar tabela
+        query = f'''
+            SELECT DISTINCT
+                data as data_pedido,
+                numero_pedido,
+                cliente,
+                valor_total as valor_pedido
+            FROM df 
+            WHERE data BETWEEN '{inicio_meta.date()}' AND '{fim_meta.date()}'
+            ORDER BY data_pedido
+        '''
+        
+        tabela = conn.execute(query).fetchdf()
+        conn.close()
+        
+        if not tabela.empty:
+            tabela["data_pedido"] = tabela["data_pedido"].dt.strftime("%d/%m/%Y")
+        
+        return tabela
+        
+    except Exception as e:
+        st.error(f"Erro ao gerar tabela de pedidos: {e}")
+        return pd.DataFrame()
+ 
 # ===== CONFIGURAÇÃO INICIAL =====
-
+ 
 # Inicializar session_state
 if 'df_dados' not in st.session_state:
     st.session_state.df_dados = pd.DataFrame()
 if 'ultima_atualizacao' not in st.session_state:
     st.session_state.ultima_atualizacao = None
-
+ 
 # Inicializar banco de dados
 init_db()
-
+ 
 # Carregar dados do banco ou Parquet se existirem
 if st.session_state.df_dados.empty:
     # Tentar carregar do Parquet primeiro (mais rápido)
@@ -695,7 +770,7 @@ if st.session_state.df_dados.empty:
         if not df_banco.empty:
             st.session_state.df_dados = df_banco
             st.session_state.ultima_atualizacao = dt.now()
-
+ 
 try:
     estados_df = pd.read_csv("estados.csv")
     municipios_df = pd.read_csv("municipios.csv")
@@ -707,9 +782,9 @@ try:
 except Exception as e:
     st.error(f"Erro ao carregar arquivos de referência: {e}")
     st.stop()
-
-st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
-
+ 
+st.set_page_config(layout="wide", page_title="Dashboard de Vendas com DuckDB")
+ 
 st.markdown("""
     <style>
         body { 
@@ -854,16 +929,44 @@ st.markdown("""
             color: #4A90E2;
             font-weight: bold;
         }
+        .duckdb-info {
+            background: linear-gradient(135deg, #3A3A3A, #2A2A2A);
+            border: 1px solid #4A4A4A;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            text-align: center;
+        }
     </style>
 """, unsafe_allow_html=True)
-
+ 
 # ===== SIDEBAR =====
-
-st.sidebar.title("📊 MENU DE SINCRONIZAÇÃO")
-
+ 
+st.sidebar.title("🦆 MENU DE SINCRONIZAÇÃO - DUCKDB")
+ 
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
 st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE - PASTA 'PEDIDOS'")
-
+ 
+# Informações do DuckDB
+st.sidebar.markdown('<div class="duckdb-info">', unsafe_allow_html=True)
+st.sidebar.markdown("### 🦆 BANCO DE DADOS DUCKDB")
+try:
+    conn = duckdb.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM pedidos")
+    total_pedidos = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM arquivos_processados")
+    arquivos_processados = cursor.fetchone()[0]
+    conn.close()
+    
+    st.sidebar.success(f"✅ DuckDB ativo")
+    st.sidebar.caption(f"📊 {total_pedidos} pedidos armazenados")
+    st.sidebar.caption(f"📁 {arquivos_processados} arquivos processados")
+except Exception as e:
+    st.sidebar.error(f"❌ Erro no DuckDB: {e}")
+st.sidebar.markdown('</div>', unsafe_allow_html=True)
+ 
 # Botão para recarregar dados
 if st.sidebar.button("🔄 Recarregar Dados"):
     # Limpar cache
@@ -872,24 +975,7 @@ if st.sidebar.button("🔄 Recarregar Dados"):
     if 'ultima_atualizacao' in st.session_state:
         del st.session_state.ultima_atualizacao
     st.rerun()
-
-# Status do banco de dados
-st.sidebar.markdown("### 💾 STATUS BANCO DE DADOS")
-try:
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM pedidos")
-    total_pedidos = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM arquivos_processados")
-    arquivos_processados = cursor.fetchone()[0]
-    conn.close()
-    
-    st.sidebar.success(f"✅ Banco de dados ativo")
-    st.sidebar.caption(f"📊 {total_pedidos} pedidos armazenados")
-    st.sidebar.caption(f"📁 {arquivos_processados} arquivos processados")
-except Exception as e:
-    st.sidebar.error(f"❌ Erro no banco: {e}")
-
+ 
 # Botão para exportar dados do banco
 if st.sidebar.button("💾 Exportar Banco de Dados"):
     df_banco = carregar_do_banco()
@@ -901,14 +987,14 @@ if st.sidebar.button("💾 Exportar Banco de Dados"):
             file_name='banco_de_dados_completo.csv',
             mime='text/csv'
         )
-
+ 
 # Botão para limpar banco
 limpar_banco_de_dados()
-
+ 
 st.sidebar.markdown('</div>', unsafe_allow_html=True)
-
+ 
 # ===== CONTEÚDO PRINCIPAL =====
-
+ 
 # Carregar dados com tratamento robusto de erros
 try:
     df = carregar_dados_google_drive()
@@ -926,7 +1012,7 @@ except Exception as e:
     st.error(f"❌ Erro fatal ao inicializar dashboard: {str(e)}")
     logger.error(f"Erro fatal: {str(e)}", exc_info=True)
     st.stop()
-
+ 
 if not df.empty:
     # Renomear colunas para compatibilidade
     df = df.rename(columns={
@@ -949,7 +1035,7 @@ if not df.empty:
 else:
     st.sidebar.error("❌ Erro na conexão")
     st.sidebar.caption("Verifique a autenticação")
-
+ 
 if not df.empty:
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
     df["Valor Total Z19-Z24"] = pd.to_numeric(df["Valor Total Z19-Z24"], errors="coerce")
@@ -1438,14 +1524,40 @@ if not df.empty:
             inicio_meta = dt(ano_meta, mes_meta_num - 1, 26).replace(hour=0, minute=0, second=0)
             fim_meta = dt(ano_meta, mes_meta_num, 25).replace(hour=23, minute=59, second=59)
         
-        df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
-        
-        df_meta_sem_duplicatas = df_meta.drop_duplicates(subset=['Número do Pedido'])
-        valor_total_vendido = df_meta_sem_duplicatas["Valor Total Z19-Z24"].sum() if not df_meta_sem_duplicatas.empty else 0
-        
-        total_pedidos = len(df_meta)
-        pedidos_unicos = len(df_meta_sem_duplicatas)
-        duplicatas = total_pedidos - pedidos_unicos
+        # Usar DuckDB para consulta otimizada
+        try:
+            conn = duckdb.connect()
+            conn.register('df', df)
+            
+            # Consulta SQL para obter dados da meta
+            query = f'''
+                SELECT 
+                    COUNT(DISTINCT numero_pedido) as pedidos_unicos,
+                    SUM(valor_total) as valor_total_vendido
+                FROM df 
+                WHERE data BETWEEN '{inicio_meta.date()}' AND '{fim_meta.date()}'
+            '''
+            
+            result = conn.execute(query).fetchdf()
+            conn.close()
+            
+            if result.empty:
+                valor_total_vendido = 0
+                total_pedidos = 0
+                pedidos_unicos = 0
+            else:
+                valor_total_vendido = result.iloc[0]['valor_total_vendido']
+                total_pedidos = len(df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)])
+                pedidos_unicos = result.iloc[0]['pedidos_unicos']
+            
+            duplicatas = total_pedidos - pedidos_unicos
+            
+        except Exception as e:
+            st.error(f"Erro ao consultar dados da meta: {e}")
+            valor_total_vendido = 0
+            total_pedidos = 0
+            pedidos_unicos = 0
+            duplicatas = 0
         
         meta_total = 200_000
         percentual_meta = min(1.0, valor_total_vendido / meta_total)
