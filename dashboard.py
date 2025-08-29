@@ -217,6 +217,8 @@ def limpar_banco_de_dados():
             del st.session_state.df_dados
         if 'ultima_atualizacao' in st.session_state:
             del st.session_state.ultima_atualizacao
+        if 'processamento_background_ativo' in st.session_state:
+            del st.session_state.processamento_background_ativo
             
         st.success("Banco de dados limpo com sucesso!")
     except Exception as e:
@@ -377,15 +379,19 @@ def processar_arquivos_background(arquivos_restantes, service):
                     with st.session_state._lock if hasattr(st.session_state, '_lock') else nullcontext():
                         st.session_state.df_dados = pd.concat([st.session_state.df_dados, result], ignore_index=True)
                         st.session_state.ultima_atualizacao = dt.now()
-                
+        
         # Salvar dados acumulados em Parquet no final
         if 'df_dados' in st.session_state and not st.session_state.df_dados.empty:
             final_df = st.session_state.df_dados.drop_duplicates(subset=['numero_pedido', 'produto'])
             salvar_em_parquet(final_df)
             
+        # Marcar processamento em background como concluído
+        st.session_state.processamento_background_ativo = False
+            
     except Exception as e:
         st.error(f"Erro no processamento em background: {e}")
         logger.error(f"Erro no processamento em background: {str(e)}", exc_info=True)
+        st.session_state.processamento_background_ativo = False
  
 def carregar_dados_google_drive():
     """
@@ -560,11 +566,14 @@ def carregar_dados_google_drive():
                     # Iniciar processamento em background dos arquivos restantes
                     if arquivos_restantes:
                         st.info(f"⏳ Continuando processamento em background de {len(arquivos_restantes)} arquivos restantes...")
+                        # Marcar processamento em background como ativo
+                        st.session_state.processamento_background_ativo = True
                         # Iniciar thread para processamento em background
                         thread = threading.Thread(target=processar_arquivos_background, args=(arquivos_restantes, service))
                         thread.daemon = True
                         thread.start()
                     
+                    # Retornar os dados imediatamente para exibir o dashboard
                     return final_df
                 else:
                     # Limpar interface de carregamento
@@ -769,6 +778,8 @@ if 'ultima_atualizacao' not in st.session_state:
     st.session_state.ultima_atualizacao = None
 if '_lock' not in st.session_state:
     st.session_state._lock = threading.Lock()
+if 'processamento_background_ativo' not in st.session_state:
+    st.session_state.processamento_background_ativo = False
  
 # Inicializar banco de dados
 init_db()
@@ -951,6 +962,22 @@ st.markdown("""
             color: #4A90E2;
             font-weight: bold;
         }
+        .status-background {
+            background: linear-gradient(135deg, #3A3A3A, #2A2A2A);
+            border: 1px solid #4A4A4A;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
+        .status-background-active {
+            background: linear-gradient(135deg, #3A3A3A, #2A2A2A);
+            border: 1px solid #FF8C00;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
     </style>
 """, unsafe_allow_html=True)
  
@@ -968,6 +995,8 @@ if st.sidebar.button("🔄 Recarregar Dados"):
         del st.session_state.df_dados
     if 'ultima_atualizacao' in st.session_state:
         del st.session_state.ultima_atualizacao
+    if 'processamento_background_ativo' in st.session_state:
+        del st.session_state.processamento_background_ativo
     st.rerun()
  
 # Status do banco de dados
@@ -986,6 +1015,17 @@ try:
     st.sidebar.caption(f"📁 {arquivos_processados} arquivos processados")
 except Exception as e:
     st.sidebar.error(f"❌ Erro no banco: {e}")
+ 
+# Status do processamento em background
+st.sidebar.markdown("### ⏳ STATUS PROCESSAMENTO")
+if st.session_state.processamento_background_ativo:
+    st.sidebar.markdown('<div class="status-background-active">', unsafe_allow_html=True)
+    st.sidebar.info("🔄 Processamento em andamento...")
+    st.sidebar.markdown('</div>', unsafe_allow_html=True)
+else:
+    st.sidebar.markdown('<div class="status-background">', unsafe_allow_html=True)
+    st.sidebar.success("✅ Nenhum processamento ativo")
+    st.sidebar.markdown('</div>', unsafe_allow_html=True)
  
 # Botão para exportar dados do banco
 if st.sidebar.button("💾 Exportar Banco de Dados"):
