@@ -17,6 +17,11 @@ import time
 import json
 from workalendar.america import Brazil
 import gc
+import logging
+
+# Configuração de logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Bibliotecas Google
 from google.oauth2 import service_account
@@ -333,11 +338,7 @@ def carregar_dados_google_drive():
     """
     Função para carregar dados do Google Drive com processamento incremental
     """
-    # Verificar se os dados já estão em cache
-    if 'df_dados' in st.session_state and 'ultima_atualizacao' in st.session_state:
-        if st.session_state.ultima_atualizacao is not None and \
-           (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 3600:
-            return st.session_state.df_dados
+    loading_container = None
     
     try:
         # Inicializar banco de dados se necessário
@@ -499,11 +500,12 @@ def carregar_dados_google_drive():
                     return pd.DataFrame()
                     
     except Exception as e:
-        # Limpar interface de carregamento
-        if 'loading_container' in locals():
+        # Limpar interface de carregamento mesmo em caso de erro
+        if loading_container is not None:
             loading_container.empty()
         
         st.error(f"Erro ao carregar dados do Google Drive: {e}")
+        logger.error(f"Erro no carregamento: {str(e)}", exc_info=True)
         return pd.DataFrame()
 
 def verificar_duplicatas(df):
@@ -928,8 +930,23 @@ st.sidebar.markdown('</div>', unsafe_allow_html=True)
 
 # ===== CONTEÚDO PRINCIPAL =====
 
-# Carregar dados
-df = carregar_dados_google_drive()
+# Carregar dados com tratamento robusto de erros
+try:
+    df = carregar_dados_google_drive()
+    
+    # Verificação crítica após carregamento
+    if df.empty:
+        st.error("⚠️ Falha crítica: Nenhum dado foi carregado")
+        st.info("Soluções possíveis:")
+        st.markdown("- Verifique a conexão com o Google Drive")
+        st.markdown("- Confirme se há arquivos na pasta 'pedidos'")
+        st.markdown("- Tente recarregar os dados manualmente")
+        st.stop()
+        
+except Exception as e:
+    st.error(f"❌ Erro fatal ao inicializar dashboard: {str(e)}")
+    logger.error(f"Erro fatal: {str(e)}", exc_info=True)
+    st.stop()
 
 if not df.empty:
     # Renomear colunas para compatibilidade
