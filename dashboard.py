@@ -18,30 +18,47 @@ import json
 from workalendar.america import Brazil
 import gc
 import logging
-
+import re
+import threading
+from contextlib import contextmanager
+ 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+ 
 # Bibliotecas Google
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
-
+ 
 # Novas bibliotecas
 import sqlite3
 import pyarrow.parquet as pq
 from apscheduler.schedulers.background import BackgroundScheduler
-
+ 
 # ===== CONFIGURAÇÃO =====
 FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 DB_PATH = 'pedidos.db'
 PARQUET_PATH = 'pedidos.parquet'
-
+ 
+# Context manager para lock
+@contextmanager
+def nullcontext():
+    yield None
+ 
+# ===== FUNÇÕES AUXILIARES =====
+ 
+def extrair_numero_pedido(nome_arquivo):
+    """Extrai o número do pedido do nome do arquivo"""
+    match = re.search(r'PVLJO-(\d+)', nome_arquivo)
+    if match:
+        return int(match.group(1))
+    return 0
+ 
 # ===== FUNÇÕES DE BANCO DE DADOS =====
-
+ 
 def init_db():
     """Inicializa o banco de dados SQLite"""
     conn = sqlite3.connect(DB_PATH)
@@ -76,7 +93,7 @@ def init_db():
     
     conn.commit()
     conn.close()
-
+ 
 def arquivo_foi_processado(nome_arquivo, data_modificacao):
     """Verifica se um arquivo já foi processado"""
     try:
@@ -93,7 +110,7 @@ def arquivo_foi_processado(nome_arquivo, data_modificacao):
         return False
     finally:
         conn.close()
-
+ 
 def marcar_arquivo_processado(nome_arquivo, data_modificacao):
     """Marca um arquivo como processado"""
     try:
@@ -108,7 +125,7 @@ def marcar_arquivo_processado(nome_arquivo, data_modificacao):
         st.error(f"Erro ao marcar arquivo processado: {e}")
     finally:
         conn.close()
-
+ 
 def salvar_no_banco(df):
     """Salva os dados no banco de dados tratando duplicatas"""
     if df.empty:
@@ -153,7 +170,7 @@ def salvar_no_banco(df):
         st.error(f"Erro ao salvar no banco: {e}")
     finally:
         conn.close()
-
+ 
 def carregar_do_banco():
     """Carrega todos os dados do banco de dados"""
     try:
@@ -164,7 +181,7 @@ def carregar_do_banco():
     except Exception as e:
         st.error(f"Erro ao carregar do banco: {e}")
         return pd.DataFrame()
-
+ 
 def carregar_do_parquet():
     """Carrega os dados do arquivo Parquet se existir"""
     if os.path.exists(PARQUET_PATH):
@@ -173,14 +190,14 @@ def carregar_do_parquet():
         except Exception as e:
             st.error(f"Erro ao carregar Parquet: {e}")
     return pd.DataFrame()
-
+ 
 def salvar_em_parquet(df):
     """Salva os dados em formato Parquet"""
     try:
         df.to_parquet(PARQUET_PATH, engine='pyarrow')
     except Exception as e:
         st.error(f"Erro ao salvar Parquet: {e}")
-
+ 
 def limpar_banco_de_dados():
     """Limpa o banco de dados (função de manutenção)"""
     try:
@@ -204,9 +221,9 @@ def limpar_banco_de_dados():
         st.success("Banco de dados limpo com sucesso!")
     except Exception as e:
         st.error(f"Erro ao limpar banco: {e}")
-
+ 
 # ===== FUNÇÕES DE PROCESSAMENTO =====
-
+ 
 def process_excel_data(df, file_name):
     """Processa os dados de um arquivo Excel"""
     pedidos = []
@@ -304,7 +321,7 @@ def process_excel_data(df, file_name):
         st.error(f"Erro ao processar arquivo {file_name}: {e}")
     
     return pd.DataFrame(pedidos)
-
+ 
 def processar_arquivo(file_info, service):
     """Processa um único arquivo"""
     try:
@@ -333,7 +350,43 @@ def processar_arquivo(file_info, service):
     except Exception as e:
         st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
         return pd.DataFrame()
-
+ 
+def processar_arquivos_background(arquivos_restantes, service):
+    """Processa arquivos restantes em segundo plano"""
+    try:
+        for i, file_info in enumerate(arquivos_restantes):
+            # Verificar se o arquivo já foi processado
+            if arquivo_foi_processado(file_info['name'], file_info['modifiedTime']):
+                continue
+            
+            # Processar o arquivo
+            result = processar_arquivo(file_info, service)
+            
+            if not result.empty:
+                # Remover duplicatas dentro do arquivo processado
+                result = result.drop_duplicates(subset=['numero_pedido', 'produto'])
+                
+                # Salvar dados no banco imediatamente
+                salvar_no_banco(result)
+                
+                # Marcar arquivo como processado
+                marcar_arquivo_processado(file_info['name'], file_info['modifiedTime'])
+                
+                # Atualizar cache com lock para evitar condições de corrida
+                if 'df_dados' in st.session_state:
+                    with st.session_state._lock if hasattr(st.session_state, '_lock') else nullcontext():
+                        st.session_state.df_dados = pd.concat([st.session_state.df_dados, result], ignore_index=True)
+                        st.session_state.ultima_atualizacao = dt.now()
+                
+        # Salvar dados acumulados em Parquet no final
+        if 'df_dados' in st.session_state and not st.session_state.df_dados.empty:
+            final_df = st.session_state.df_dados.drop_duplicates(subset=['numero_pedido', 'produto'])
+            salvar_em_parquet(final_df)
+            
+    except Exception as e:
+        st.error(f"Erro no processamento em background: {e}")
+        logger.error(f"Erro no processamento em background: {str(e)}", exc_info=True)
+ 
 def carregar_dados_google_drive():
     """
     Função para carregar dados do Google Drive com processamento incremental
@@ -343,6 +396,12 @@ def carregar_dados_google_drive():
     try:
         # Inicializar banco de dados se necessário
         init_db()
+        
+        # Verificar se os dados já estão em cache e são recentes (menos de 1 hora)
+        if 'df_dados' in st.session_state and 'ultima_atualizacao' in st.session_state:
+            if st.session_state.ultima_atualizacao is not None and \
+               (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 3600:
+                return st.session_state.df_dados
         
         # Criar container para a interface de carregamento
         loading_container = st.empty()
@@ -395,7 +454,14 @@ def carregar_dados_google_drive():
                 st.warning("Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
                 return pd.DataFrame()
             
-            st.info(f"Encontrados {len(all_files)} arquivos. Processando...")
+            # Ordenar arquivos pelo número do pedido (decrescente)
+            all_files_sorted = sorted(all_files, key=lambda x: extrair_numero_pedido(x['name']), reverse=True)
+            
+            st.info(f"Encontrados {len(all_files_sorted)} arquivos. Processando...")
+            
+            # Dividir os arquivos: primeiros 200 e o restante
+            lote_principal = all_files_sorted[:200]
+            arquivos_restantes = all_files_sorted[200:]
             
             # Interface de carregamento
             progress_bar = st.progress(0)
@@ -405,15 +471,15 @@ def carregar_dados_google_drive():
             
             with st.spinner("CARREGANDO OS ARQUIVOS PELA PRIMEIRA VEZ POR FAVOR AGUARDE"):
                 # Estimar tempo de processamento
-                tempo_estimado_total = len(all_files) * 3  # Tempo estimado por arquivo
+                tempo_estimado_total = len(lote_principal) * 3  # Tempo estimado por arquivo
                 tempo_estimado_text = st.empty()
                 tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_estimado_total//60:.0f} minutos e {tempo_estimado_total%60:.0f} segundos")
                 
-                # Processar cada arquivo sequencialmente
+                # Processar cada arquivo sequencialmente (apenas o lote principal)
                 tempo_inicial = time.time()
                 arquivos_com_erro = 0
                 
-                for i, file_info in enumerate(all_files):
+                for i, file_info in enumerate(lote_principal):
                     # Atualizar nome do arquivo atual
                     arquivo_atual_text.text(f"📁 Processando: {file_info['name']}")
                     
@@ -421,9 +487,9 @@ def carregar_dados_google_drive():
                         # Verificar se o arquivo já foi processado
                         if arquivo_foi_processado(file_info['name'], file_info['modifiedTime']):
                             st.info(f"⏭️ Pulando arquivo já processado: {file_info['name']}")
-                            progress = (i + 1) / len(all_files)
+                            progress = (i + 1) / len(lote_principal)
                             progress_bar.progress(progress)
-                            status_text.text(f"Progresso: {i+1}/{len(all_files)} arquivos ({progress*100:.1f}%)")
+                            status_text.text(f"Progresso: {i+1}/{len(lote_principal)} arquivos ({progress*100:.1f}%)")
                             continue
                         
                         # Processar o arquivo
@@ -467,16 +533,16 @@ def carregar_dados_google_drive():
                         continue
                     
                     # Atualizar progresso
-                    progress = (i + 1) / len(all_files)
+                    progress = (i + 1) / len(lote_principal)
                     progress_bar.progress(progress)
                     
                     # Atualizar status
-                    status_text.text(f"Progresso: {i+1}/{len(all_files)} arquivos ({progress*100:.1f}%)")
+                    status_text.text(f"Progresso: {i+1}/{len(lote_principal)} arquivos ({progress*100:.1f}%)")
                     
                     # Atualizar estimativa de tempo restante
                     tempo_decorrido = time.time() - tempo_inicial
                     if i > 0:
-                        tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (len(all_files) - i - 1)
+                        tempo_restante_estimado = (tempo_decorrido / (i + 1)) * (len(lote_principal) - i - 1)
                         tempo_estimado_text.caption(f"⏱️ Tempo estimado: {tempo_restante_estimado//60:.0f}min {tempo_restante_estimado%60:.0f}s restantes")
                 
                 # Salvar dados acumulados em Parquet no final
@@ -487,9 +553,17 @@ def carregar_dados_google_drive():
                     # Limpar interface de carregamento
                     loading_container.empty()
                     
-                    st.success(f"✅ Processamento concluído! {len(final_df)} pedidos no total")
+                    st.success(f"✅ Processamento inicial concluído! {len(final_df)} pedidos no total")
                     if arquivos_com_erro > 0:
                         st.warning(f"⚠️ {arquivos_com_erro} arquivos não puderam ser processados devido a erros")
+                    
+                    # Iniciar processamento em background dos arquivos restantes
+                    if arquivos_restantes:
+                        st.info(f"⏳ Continuando processamento em background de {len(arquivos_restantes)} arquivos restantes...")
+                        # Iniciar thread para processamento em background
+                        thread = threading.Thread(target=processar_arquivos_background, args=(arquivos_restantes, service))
+                        thread.daemon = True
+                        thread.start()
                     
                     return final_df
                 else:
@@ -507,7 +581,7 @@ def carregar_dados_google_drive():
         st.error(f"Erro ao carregar dados do Google Drive: {e}")
         logger.error(f"Erro no carregamento: {str(e)}", exc_info=True)
         return pd.DataFrame()
-
+ 
 def verificar_duplicatas(df):
     duplicatas = df[df.duplicated(subset=['numero_pedido'], keep=False)]
     
@@ -523,13 +597,13 @@ def verificar_duplicatas(df):
         st.success("✅ Nenhuma duplicata encontrada!")
         st.caption(f"Total de pedidos: {len(df)} | Todos são únicos")
         return False
-
+ 
 def normalize_text(text):
     if pd.isna(text):
         return ""
     text = ''.join(c for c in unicodedata.normalize('NFD', str(text)) if unicodedata.category(c) != 'Mn')
     return text.strip().upper()
-
+ 
 def find_closest_city_with_state(city, state, city_list, municipios_df, estados_df, threshold=70):
     if not city or city == "DESCONHECIDO":
         return None, None, None
@@ -563,13 +637,13 @@ def find_closest_city_with_state(city, state, city_list, municipios_df, estados_
             return matched_city, city_info.iloc[0]['latitude'], city_info.iloc[0]['longitude']
     
     return None, None, None
-
+ 
 def get_estado_codigo(estado_normalizado, estados_df):
     estado_info = estados_df[estados_df['uf_normalizado'] == estado_normalizado]
     if not estado_info.empty:
         return estado_info.iloc[0]['codigo_uf']
     return None
-
+ 
 def get_week(data, start_date, end_date):
     total_days = (end_date - start_date).days + 1
     if total_days <= 0 or data < start_date or data > end_date:
@@ -577,7 +651,7 @@ def get_week(data, start_date, end_date):
     days_since_start = (data - start_date).days
     week = ((days_since_start * 4) // total_days) + 1 if days_since_start >= 0 else 0
     return min(max(week, 1), 4)
-
+ 
 def classificar_produto(descricao):
     kits_ar = ["KIT 1", "KIT 2", "KIT 3", "KIT 4", "KIT 5", "KIT 6", "KIT 7", 
                "KIT UNIVERSAL", "KIT UPGRADE", "KIT AIR RIDE 4C", "KIT K3", "KIT K4", "KIT K5"]
@@ -588,7 +662,7 @@ def classificar_produto(descricao):
         return "KITS ROSCA"
     else:
         return "PEÇAS AVULSAS"
-
+ 
 def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
     df_periodo = df[(df["data"] >= inicio_meta) & (df["data"] <= fim_meta)].copy()
     df_periodo = df_periodo.drop_duplicates(subset=['numero_pedido'])
@@ -633,7 +707,7 @@ def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
     })
     
     return resultados, valor_total_vendido, meta_atingida
-
+ 
 def identificar_lojistas_recuperar(df):
     pedidos_por_cliente = df.groupby('cliente').size().reset_index(name='num_pedidos')
     ultima_compra = df.groupby('cliente')['data'].max().reset_index(name='ultima_compra')
@@ -657,7 +731,7 @@ def identificar_lojistas_recuperar(df):
         return lojistas_recuperar
     
     return pd.DataFrame()
-
+ 
 def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     df_meta = df[(df["data"] >= inicio_meta) & (df["data"] <= fim_meta)].copy()
     
@@ -671,7 +745,7 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     tabela = tabela.sort_values("data_pedido")
     
     return tabela
-
+ 
 def atualizar_dados_background():
     """Atualiza os dados em segundo plano"""
     try:
@@ -685,24 +759,26 @@ def atualizar_dados_background():
             st.success("✅ Dados atualizados em background!")
     except Exception as e:
         st.error(f"Erro na atualização em background: {e}")
-
+ 
 # ===== CONFIGURAÇÃO INICIAL =====
-
+ 
 # Inicializar session_state
 if 'df_dados' not in st.session_state:
     st.session_state.df_dados = pd.DataFrame()
 if 'ultima_atualizacao' not in st.session_state:
     st.session_state.ultima_atualizacao = None
-
+if '_lock' not in st.session_state:
+    st.session_state._lock = threading.Lock()
+ 
 # Inicializar banco de dados
 init_db()
-
+ 
 # Iniciar scheduler em background
 if 'scheduler' not in st.session_state:
     st.session_state.scheduler = BackgroundScheduler()
     st.session_state.scheduler.add_job(atualizar_dados_background, 'interval', hours=6)
     st.session_state.scheduler.start()
-
+ 
 # Carregar dados do banco ou Parquet se existirem
 if st.session_state.df_dados.empty:
     # Tentar carregar do Parquet primeiro (mais rápido)
@@ -716,7 +792,7 @@ if st.session_state.df_dados.empty:
         if not df_banco.empty:
             st.session_state.df_dados = df_banco
             st.session_state.ultima_atualizacao = dt.now()
-
+ 
 try:
     estados_df = pd.read_csv("estados.csv")
     municipios_df = pd.read_csv("municipios.csv")
@@ -728,9 +804,9 @@ try:
 except Exception as e:
     st.error(f"Erro ao carregar arquivos de referência: {e}")
     st.stop()
-
+ 
 st.set_page_config(layout="wide", page_title="Dashboard de Vendas")
-
+ 
 st.markdown("""
     <style>
         body { 
@@ -877,14 +953,14 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
-
+ 
 # ===== SIDEBAR =====
-
+ 
 st.sidebar.title("📊 MENU DE SINCRONIZAÇÃO")
-
+ 
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
 st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE - PASTA 'PEDIDOS'")
-
+ 
 # Botão para recarregar dados
 if st.sidebar.button("🔄 Recarregar Dados"):
     # Limpar cache
@@ -893,7 +969,7 @@ if st.sidebar.button("🔄 Recarregar Dados"):
     if 'ultima_atualizacao' in st.session_state:
         del st.session_state.ultima_atualizacao
     st.rerun()
-
+ 
 # Status do banco de dados
 st.sidebar.markdown("### 💾 STATUS BANCO DE DADOS")
 try:
@@ -910,7 +986,7 @@ try:
     st.sidebar.caption(f"📁 {arquivos_processados} arquivos processados")
 except Exception as e:
     st.sidebar.error(f"❌ Erro no banco: {e}")
-
+ 
 # Botão para exportar dados do banco
 if st.sidebar.button("💾 Exportar Banco de Dados"):
     df_banco = carregar_do_banco()
@@ -922,14 +998,14 @@ if st.sidebar.button("💾 Exportar Banco de Dados"):
             file_name='banco_de_dados_completo.csv',
             mime='text/csv'
         )
-
+ 
 # Botão para limpar banco
 limpar_banco_de_dados()
-
+ 
 st.sidebar.markdown('</div>', unsafe_allow_html=True)
-
+ 
 # ===== CONTEÚDO PRINCIPAL =====
-
+ 
 # Carregar dados com tratamento robusto de erros
 try:
     df = carregar_dados_google_drive()
@@ -947,7 +1023,7 @@ except Exception as e:
     st.error(f"❌ Erro fatal ao inicializar dashboard: {str(e)}")
     logger.error(f"Erro fatal: {str(e)}", exc_info=True)
     st.stop()
-
+ 
 if not df.empty:
     # Renomear colunas para compatibilidade
     df = df.rename(columns={
@@ -970,7 +1046,7 @@ if not df.empty:
 else:
     st.sidebar.error("❌ Erro na conexão")
     st.sidebar.caption("Verifique a autenticação")
-
+ 
 if not df.empty:
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
     df["Valor Total Z19-Z24"] = pd.to_numeric(df["Valor Total Z19-Z24"], errors="coerce")
