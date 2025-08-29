@@ -19,6 +19,8 @@ from workalendar.america import Brazil
 import gc
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +42,7 @@ SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 DB_PATH = 'pedidos.db'
 PARQUET_PATH = 'pedidos.parquet'
 TAMANHO_LOTE = 50  # Processar em lotes menores para atualizações mais rápidas
+TAMANHO_LOTE_INICIAL = 200  # Número de arquivos para inicialização rápida
 
 # ===== FUNÇÕES AUXILIARES =====
 
@@ -119,50 +122,31 @@ def marcar_arquivo_processado(nome_arquivo, data_modificacao):
     finally:
         conn.close()
 
-def salvar_no_banco(df):
-    """Salva os dados no banco de dados tratando duplicatas"""
+def salvar_no_banco_batch(df):
+    """Salva os dados no banco de dados em batch"""
     if df.empty:
         return
     
     try:
         conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
         
-        # Para cada linha no DataFrame, verificar se já existe no banco
-        for _, row in df.iterrows():
-            try:
-                # Verificar se o registro já existe
-                cursor.execute('''
-                    SELECT 1 FROM pedidos 
-                    WHERE numero_pedido = ? AND produto = ?
-                ''', (row['numero_pedido'], row['produto']))
-                
-                if cursor.fetchone() is None:
-                    # Inserir apenas se não existir
-                    cursor.execute('''
-                        INSERT INTO pedidos (numero_pedido, data, cliente, valor_total, produto, quantidade, cidade, estado, telefone, arquivo_origem)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        row['numero_pedido'],
-                        row['data'],
-                        row['cliente'],
-                        row['valor_total'],
-                        row['produto'],
-                        row['quantidade'],
-                        row['cidade'],
-                        row['estado'],
-                        row['telefone'],
-                        row['arquivo_origem']
-                    ))
-            except Exception as e:
-                st.error(f"Erro ao inserir registro {row['numero_pedido']} - {row['produto']}: {e}")
-                continue
+        # Remove duplicatas dentro do DataFrame
+        df = df.drop_duplicates(subset=['numero_pedido', 'produto'])
+        
+        # Insere em batch
+        df.to_sql(
+            "pedidos", 
+            conn, 
+            if_exists="append", 
+            index=False, 
+            method="multi"
+        )
         
         conn.commit()
-    except Exception as e:
-        st.error(f"Erro ao salvar no banco: {e}")
-    finally:
         conn.close()
+        
+    except Exception as e:
+        st.error(f"Erro ao salvar no banco em batch: {e}")
 
 def carregar_do_banco():
     """Carrega todos os dados do banco de dados"""
@@ -217,6 +201,7 @@ def limpar_banco_de_dados():
 
 # ===== FUNÇÕES DE PROCESSAMENTO =====
 
+@st.cache_data(ttl=3600)
 def process_excel_data(df, file_name):
     """Processa os dados de um arquivo Excel de forma otimizada"""
     pedidos = []
@@ -314,6 +299,10 @@ def process_excel_data(df, file_name):
 def processar_arquivo(file_info, service):
     """Processa um único arquivo de forma otimizada"""
     try:
+        # Verificar se o arquivo já foi processado
+        if arquivo_foi_processado(file_info['name'], file_info['modifiedTime']):
+            return pd.DataFrame()
+        
         # Baixar arquivo
         request = service.files().get_media(fileId=file_info['id'])
         file_content = io.BytesIO()
@@ -335,10 +324,66 @@ def processar_arquivo(file_info, service):
                     return pd.DataFrame()
         
         result = process_excel_data(df, file_info['name'])
+        
+        if not result.empty:
+            # Marcar arquivo como processado
+            marcar_arquivo_processado(file_info['name'], file_info['modifiedTime'])
+        
         return result
     except Exception as e:
         st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
         return pd.DataFrame()
+
+def processar_lote_paralelo(lote, service):
+    """Processa um lote de arquivos em paralelo"""
+    df_todos = pd.DataFrame()
+    
+    try:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            # Mapeia cada arquivo para sua função de processamento
+            futures = [executor.submit(processar_arquivo, file_info, service) for file_info in lote]
+            
+            # Aguarda o processamento de todos os arquivos
+            for future in futures:
+                result = future.result()
+                if not result.empty:
+                    # Remove duplicatas dentro do arquivo processado
+                    result = result.drop_duplicates(subset=['numero_pedido', 'produto'])
+                    df_todos = pd.concat([df_todos, result], ignore_index=True)
+        
+        return df_todos
+    except Exception as e:
+        st.error(f"Erro ao processar lote em paralelo: {e}")
+        return pd.DataFrame()
+
+def processar_arquivos_restantes(arquivos_restantes, service):
+    """Processa os arquivos restantes em background"""
+    try:
+        df_restantes = pd.DataFrame()
+        
+        # Processa em lotes menores para não bloquear a interface
+        for lote_inicio in range(0, len(arquivos_restantes), TAMANHO_LOTE):
+            lote_fim = min(lote_inicio + TAMANHO_LOTE, len(arquivos_restantes))
+            lote_atual = arquivos_restantes[lote_inicio:lote_fim]
+            
+            # Processa o lote atual
+            df_lote = processar_lote_paralelo(lote_atual, service)
+            
+            if not df_lote.empty:
+                # Salva no banco e parquet
+                salvar_no_banco_batch(df_lote)
+                salvar_em_parquet(df_lote)
+                
+                # Atualiza o cache
+                if 'df_dados' in st.session_state:
+                    st.session_state.df_dados = pd.concat([st.session_state.df_dados, df_lote], ignore_index=True)
+                    st.session_state.ultima_atualizacao = dt.now()
+                
+                # Mostra notificação
+                st.toast(f"✅ {len(df_lote)} novos pedidos adicionados!", icon="🎉")
+        
+    except Exception as e:
+        logger.error(f"Erro ao processar arquivos restantes: {str(e)}", exc_info=True)
 
 def carregar_dados_google_drive():
     """
@@ -353,13 +398,26 @@ def carregar_dados_google_drive():
     # Inicializar banco de dados se necessário
     init_db()
     
-    # Criar placeholders para a interface
-    placeholder = st.empty()
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    arquivo_atual_text = st.empty()
-    status_banco_text = st.empty()
+    # Tenta carregar do Parquet primeiro (mais rápido)
+    df_parquet = carregar_do_parquet()
+    if not df_parquet.empty:
+        st.session_state.df_dados = df_parquet
+        st.session_state.ultima_atualizacao = dt.now()
+        # Inicia o processamento em background
+        st.sidebar.info("🔄 Novos dados em background...")
+        return df_parquet
     
+    # Se não tiver Parquet, tenta carregar do banco
+    df_banco = carregar_do_banco()
+    if not df_banco.empty:
+        st.session_state.df_dados = df_banco
+        st.session_state.ultima_atualizacao = dt.now()
+        # Inicia o processamento em background
+        st.sidebar.info("🔄 Novos dados em background...")
+        return df_banco
+    
+    # Se não tiver dados, mostra mensagem de carregamento
+    placeholder = st.empty()
     with placeholder.container():
         st.markdown("### 🔄 CARREGANDO ARQUIVOS DO GOOGLE DRIVE")
         
@@ -384,7 +442,7 @@ def carregar_dados_google_drive():
             
             service = build('drive', 'v3', credentials=creds)
             
-            # Listar todos os arquivos (com paginação)
+            # Listar arquivos
             query = f"parents in '{FOLDER_ID}' and mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
             page_token = None
             all_files = []
@@ -412,97 +470,37 @@ def carregar_dados_google_drive():
             # Ordenar arquivos pelo número do pedido (decrescente)
             all_files_sorted = sorted(all_files, key=lambda x: extrair_numero_pedido(x['name']), reverse=True)
             
-            st.info(f"Encontrados {len(all_files_sorted)} arquivos. Processando em lotes de {TAMANHO_LOTE}...")
+            # Processar apenas os primeiros arquivos para inicialização rápida
+            lote_principal = all_files_sorted[:TAMANHO_LOTE_INICIAL]
+            arquivos_restantes = all_files_sorted[TAMANHO_LOTE_INICIAL:]
             
-            # Inicializar DataFrame para armazenar todos os dados
-            df_todos = pd.DataFrame()
+            st.info(f"Encontrados {len(all_files_sorted)} arquivos. Processando {len(lote_principal)} arquivos para inicialização rápida...")
             
-            # Processar em lotes
-            tempo_inicial = time.time()
-            arquivos_com_erro = 0
-            total_arquivos = len(all_files_sorted)
+            # Processar em paralelo
+            df_todos = processar_lote_paralelo(lote_principal, service)
             
-            for lote_inicio in range(0, total_arquivos, TAMANHO_LOTE):
-                lote_fim = min(lote_inicio + TAMANHO_LOTE, total_arquivos)
-                lote_atual = all_files_sorted[lote_inicio:lote_fim]
+            if not df_todos.empty:
+                # Salvar no banco e parquet
+                salvar_no_banco_batch(df_todos)
+                salvar_em_parquet(df_todos)
                 
-                st.info(f"Processando lote {lote_inicio//TAMANHO_LOTE + 1}: arquivos {lote_inicio+1} a {lote_fim}")
+                # Atualizar cache
+                st.session_state.df_dados = df_todos.copy()
+                st.session_state.ultima_atualizacao = dt.now()
                 
-                # Processar cada arquivo no lote
-                for i, file_info in enumerate(lote_atual):
-                    # Atualizar nome do arquivo atual
-                    arquivo_atual_text.text(f"📁 Processando: {file_info['name']}")
-                    
-                    try:
-                        # Verificar se o arquivo já foi processado
-                        if arquivo_foi_processado(file_info['name'], file_info['modifiedTime']):
-                            continue
-                        
-                        # Processar o arquivo
-                        result = processar_arquivo(file_info, service)
-                        
-                        if not result.empty:
-                            # Remover duplicatas dentro do arquivo processado
-                            result = result.drop_duplicates(subset=['numero_pedido', 'produto'])
-                            
-                            # Salvar dados no banco imediatamente
-                            salvar_no_banco(result)
-                            
-                            # Adicionar ao DataFrame total
-                            df_todos = pd.concat([df_todos, result], ignore_index=True)
-                            
-                            # Marcar arquivo como processado
-                            marcar_arquivo_processado(file_info['name'], file_info['modifiedTime'])
-                            
-                            # Atualizar cache
-                            st.session_state.df_dados = df_todos.copy()
-                            st.session_state.ultima_atualizacao = dt.now()
-                            
-                            # Atualizar status do banco de dados
-                            try:
-                                conn = sqlite3.connect(DB_PATH)
-                                cursor = conn.cursor()
-                                cursor.execute("SELECT COUNT(*) FROM pedidos")
-                                total_pedidos = cursor.fetchone()[0]
-                                cursor.execute("SELECT COUNT(*) FROM arquivos_processados")
-                                arquivos_processados = cursor.fetchone()[0]
-                                conn.close()
-                                
-                                # Atualizar status do banco
-                                status_banco_text.text(f"📊 {total_pedidos} pedidos | 📁 {arquivos_processados} arquivos")
-                            except Exception as e:
-                                st.error(f"Erro ao atualizar status do banco: {e}")
-                    except Exception as e:
-                        arquivos_com_erro += 1
-                        st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
-                        continue
-                    
-                    # Atualizar progresso
-                    progresso_total = (lote_inicio + i + 1) / total_arquivos
-                    progress_bar.progress(progresso_total)
-                    
-                    # Atualizar status
-                    status_text.text(f"Progresso: {lote_inicio + i + 1}/{total_arquivos} arquivos ({progresso_total*100:.1f}%)")
+                # Iniciar processamento dos arquivos restantes em background
+                threading.Thread(target=processar_arquivos_restantes, args=(arquivos_restantes, service), daemon=True).start()
                 
-                # Salvar dados acumulados em Parquet após cada lote
-                if not df_todos.empty:
-                    salvar_em_parquet(df_todos)
+                # Limpar interface de carregamento
+                placeholder.empty()
                 
-                # Forçar atualização da interface após cada lote
-                st.experimental_rerun()
-            
-            # Limpar interface de carregamento
-            placeholder.empty()
-            progress_bar.empty()
-            status_text.empty()
-            arquivo_atual_text.empty()
-            status_banco_text.empty()
-            
-            st.success(f"✅ Processamento concluído! {len(df_todos)} pedidos no total")
-            if arquivos_com_erro > 0:
-                st.warning(f"⚠️ {arquivos_com_erro} arquivos não puderam ser processados devido a erros")
-            
-            return df_todos
+                st.success(f"✅ Processamento inicial concluído! {len(df_todos)} pedidos carregados")
+                st.sidebar.info("🔄 Processando arquivos restantes em background...")
+                
+                return df_todos
+            else:
+                st.warning("Nenhum dado processado nos arquivos iniciais")
+                return pd.DataFrame()
             
         except Exception as e:
             st.error(f"Erro ao carregar dados do Google Drive: {e}")
@@ -1524,6 +1522,9 @@ if not df.empty:
         st.dataframe(resultados.style.format({'Valor (R$)': 'R$ {:,.2f}'}), width="stretch")
         
         st.markdown('<div class="ganhos-destaque">', unsafe_allow_html=True)
+        st.markdown("### Ganhos Estimados")
+        ganhos_totais = resultados.iloc[-1, 1]
+        st.markdown(f'<div class="ganhhos-destaque">', unsafe_allow_html=True)
         st.markdown("### Ganhos Estimados")
         ganhos_totais = resultados.iloc[-1, 1]
         st.markdown(f'<div class="ganhos-valor">R$ {ganhos_totais:,.2f}</div>', unsafe_allow_html=True)
