@@ -69,7 +69,7 @@ def download_csv_from_drive():
         st.error(f"Erro ao baixar CSV: {e}")
         return None
 def load_csv_data():
-    """Carrega dados do arquivo CSV consolidado"""
+    """Carrega dados do arquivo CSV consolidado com tratamento robusto"""
     global data, last_modified_time
     
     try:
@@ -78,66 +78,52 @@ def load_csv_data():
         if csv_content is None:
             return pd.DataFrame()
         
-        # Tentar diferentes delimitadores
-        delimiters = [',', ';', '\t']  # Vírgula, ponto e vírgula, tabulação
+        # Detectar delimitador automaticamente
+        csv_content.seek(0)
+        sample = csv_content.read(2048)
+        csv_content.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=[',', ';', '\t', '|'])
+            delimiter = dialect.delimiter
+        except Exception:
+            delimiter = ';'  # fallback padrão
         
-        for delimiter in delimiters:
-            try:
-                # Carregar dados do CSV com o delimitador atual
-                df = pd.read_csv(csv_content, delimiter=delimiter, encoding='utf-8', on_bad_lines='warn')
-                
-                # Verificar se o DataFrame não está vazio e tem as colunas esperadas
-                if not df.empty and len(df.columns) > 0:
-                    # Mostrar informações para depuração
-                    st.info(f"✅ CSV carregado com delimitador '{delimiter}'")
-                    st.info(f"📊 {len(df)} linhas e {len(df.columns)} colunas encontradas")
-                    
-                    # Processar dados
-                    df.columns = df.columns.str.strip().str.upper()
-                    
-                    # Verificar se temos as colunas necessárias
-                    colunas_esperadas = ['DATA', 'CLIENTE', 'PRODUTO', 'VALOR', 'QUANTIDADE']
-                    colunas_encontradas = [col for col in colunas_esperadas if col in df.columns]
-                    
-                    if len(colunas_encontradas) >= 3:  # Pelo menos algumas colunas essenciais
-                        # Renomear colunas se necessário
-                        if 'DATA' in df.columns:
-                            df['DATA'] = pd.to_datetime(df['DATA'], errors='coerce')
-                        if 'VALOR' in df.columns:
-                            df['VALOR'] = pd.to_numeric(df['VALOR'], errors='coerce')
-                        if 'QUANTIDADE' in df.columns:
-                            df['QUANTIDADE'] = pd.to_numeric(df['QUANTIDADE'], errors='coerce')
-                        
-                        # Filtrar datas inválidas
-                        if 'DATA' in df.columns:
-                            df = df.dropna(subset=['DATA'])
-                        
-                        # Ordenar por data
-                        if 'DATA' in df.columns:
-                            df = df.sort_values('DATA')
-                        
-                        # Atualizar timestamp
-                        last_modified_time = time.time()
-                        
-                        return df
-                    else:
-                        st.warning(f"Colunas esperadas não encontradas. Encontradas: {list(df.columns)}")
-                        continue
-                        
-            except pd.errors.ParserError as e:
-                st.warning(f"Erro com delimitador '{delimiter}': {e}")
-                csv_content.seek(0)  # Resetar o ponteiro do arquivo
-                continue
-            except Exception as e:
-                st.warning(f"Erro inesperado com delimitador '{delimiter}': {e}")
-                csv_content.seek(0)  # Resetar o ponteiro do arquivo
-                continue
+        # Carregar dados do CSV com tratamento robusto
+        df = pd.read_csv(
+            csv_content,
+            delimiter=delimiter,
+            encoding="utf-8",
+            on_bad_lines="skip"
+        )
         
-        # Se chegou aqui, nenhum delimitador funcionou
-        st.error("❌ Não foi possível ler o arquivo CSV com nenhum dos delimitadores testados")
-        st.error("Verifique o formato do arquivo CSV")
-        return pd.DataFrame()
+        # Se vazio, retorna DataFrame vazio
+        if df.empty:
+            return pd.DataFrame()
         
+        # Normalizar nomes de colunas (caso venham com espaços)
+        df.columns = df.columns.str.strip()
+        
+        # Validar colunas obrigatórias
+        colunas_necessarias = {"DATA", "VALOR"}
+        if not colunas_necessarias.issubset(set(df.columns)):
+            st.error(f"CSV inválido: colunas esperadas {colunas_necessarias}, mas encontradas {set(df.columns)}")
+            return pd.DataFrame()
+        
+        # Processar dados
+        df["DATA"] = pd.to_datetime(df["DATA"], errors="coerce")
+        df["VALOR"] = pd.to_numeric(df["VALOR"], errors="coerce")
+        
+        # Filtrar datas válidas
+        df = df.dropna(subset=["DATA"])
+        
+        # Ordenar por data
+        df = df.sort_values("DATA")
+        
+        # Atualizar timestamp
+        last_modified_time = time.time()
+        
+        return df
+    
     except Exception as e:
         st.error(f"Erro ao carregar dados do CSV: {e}")
         return pd.DataFrame()
