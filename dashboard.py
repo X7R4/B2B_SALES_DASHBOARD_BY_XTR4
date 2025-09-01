@@ -24,6 +24,9 @@ import requests
 CSV_FILE_NAME = 'dados_extraidos.csv'  # Nome do arquivo CSV consolidado
 CSV_URL = 'https://drive.google.com/uc?export=download&id=1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # URL do CSV no Google Drive
  
+# Configurações de autenticação do Google
+SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+ 
 # VARIÁVEIS GLOBAIS
 last_modified_time = 0
 data = None
@@ -65,7 +68,6 @@ def download_csv_from_drive():
     except Exception as e:
         st.error(f"Erro ao baixar CSV: {e}")
         return None
- 
 def load_csv_data():
     """Carrega dados do arquivo CSV consolidado"""
     global data, last_modified_time
