@@ -10,220 +10,118 @@ from pathlib import Path
 from fuzzywuzzy import process, fuzz
 import unicodedata
 import numpy as np
-import math
-import sys
 from datetime import datetime as dt
 import time
-import json
 from workalendar.america import Brazil
-import gc
-import logging
-import re
-import threading
-from concurrent.futures import ThreadPoolExecutor
-import duckdb
- 
-# Configuração de logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
- 
-# Bibliotecas Google
+import io
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-import io
+import requests
  
-# ===== CONFIGURAÇÃO =====
-FOLDER_ID = '1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-DB_PATH = 'pedidos.duckdb'  # Agora usando DuckDB
-PARQUET_PATH = 'pedidos.parquet'
-TAMANHO_LOTE = 50  # Processar em lotes menores para atualizações mais rápidas
-TAMANHO_LOTE_INICIAL = 200  # Número de arquivos para inicialização rápida
+# ===== CONFIGURAÇÕES =====
+# Configurações do CSV consolidado
+CSV_FILE_NAME = 'dados_extraidos.csv'  # Nome do arquivo CSV consolidado
+CSV_URL = 'https://drive.google.com/uc?export=download&id=1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # URL do CSV no Google Drive
  
-# ===== FUNÇÕES AUXILIARES =====
+# VARIÁVEIS GLOBAIS
+last_modified_time = 0
+data = None
  
-def extrair_numero_pedido(nome_arquivo):
-    """Extrai o número do pedido do nome do arquivo"""
-    match = re.search(r'PVLJO-(\d+)', nome_arquivo)
-    if match:
-        return int(match.group(1))
-    return 0
+# ===== FUNÇÕES DE CARREGAMENTO DE CSV =====
  
-# ===== FUNÇÕES DE BANCO DE DADOS (DUCKDB) =====
- 
-def init_db():
-    """Inicializa o banco de dados DuckDB"""
-    # Criar diretório se não existir
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    
-    conn = duckdb.connect(DB_PATH)
-    
-    # Tabela para registrar arquivos processados
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS arquivos_processados (
-            nome_arquivo VARCHAR PRIMARY KEY,
-            data_modificacao TIMESTAMP NOT NULL,
-            data_processamento TIMESTAMP NOT NULL
-        )
-    ''')
-    
-    # Tabela para armazenar os pedidos
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS pedidos (
-            numero_pedido VARCHAR NOT NULL,
-            data DATE NOT NULL,
-            cliente VARCHAR NOT NULL,
-            valor_total DECIMAL(15,2) NOT NULL,
-            produto VARCHAR NOT NULL,
-            quantidade DECIMAL(10,2) NOT NULL,
-            cidade VARCHAR NOT NULL,
-            estado VARCHAR NOT NULL,
-            telefone VARCHAR NOT NULL,
-            arquivo_origem VARCHAR NOT NULL,
-            UNIQUE(numero_pedido, produto)
-        )
-    ''')
-    
-    # Criar índices para melhor performance
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_pedidos_data ON pedidos(data)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_pedidos_cliente ON pedidos(cliente)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_arquivos_nome ON arquivos_processados(nome_arquivo)')
-    
-    conn.close()
- 
-def arquivo_foi_processado(nome_arquivo, data_modificacao):
-    """Verifica se um arquivo já foi processado"""
+def download_csv_from_drive():
+    """Baixa o arquivo CSV do Google Drive"""
     try:
-        conn = duckdb.connect(DB_PATH)
-        result = conn.execute('''
-            SELECT 1 FROM arquivos_processados 
-            WHERE nome_arquivo = ? AND data_modificacao = ?
-        ''', (nome_arquivo, data_modificacao)).fetchone()
-        return result is not None
+        # Verificar se temos credenciais
+        if 'gcp_service_account' in st.secrets:
+            credentials_info = {
+                "type": st.secrets["gcp_service_account"]["type"],
+                "project_id": st.secrets["gcp_service_account"]["project_id"],
+                "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+                "private_key": st.secrets["gcp_service_account"]["private_key"],
+                "client_email": st.secrets["gcp_service_account"]["client_email"],
+                "client_id": st.secrets["gcp_service_account"]["client_id"],
+                "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+                "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+                "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+                "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
+            }
+            
+            creds = service_account.Credentials.from_service_account_info(
+                credentials_info, scopes=SCOPES
+            )
+            
+            # Baixar arquivo
+            response = requests.get(CSV_URL, headers={'Authorization': f'Bearer {creds.token}'})
+            response.raise_for_status()
+            return io.StringIO(response.text)
+        else:
+            # Fallback para download direto
+            response = requests.get(CSV_URL)
+            response.raise_for_status()
+            return io.StringIO(response.text)
+            
     except Exception as e:
-        st.error(f"Erro ao verificar arquivo processado: {e}")
-        return False
-    finally:
-        conn.close()
+        st.error(f"Erro ao baixar CSV: {e}")
+        return None
  
-def marcar_arquivo_processado(nome_arquivo, data_modificacao):
-    """Marca um arquivo como processado"""
-    try:
-        conn = duckdb.connect(DB_PATH)
-        conn.execute('''
-            INSERT OR REPLACE INTO arquivos_processados (nome_arquivo, data_modificacao, data_processamento)
-            VALUES (?, ?, ?)
-        ''', (nome_arquivo, data_modificacao, dt.now()))
-        conn.commit()
-    except Exception as e:
-        st.error(f"Erro ao marcar arquivo processado: {e}")
-    finally:
-        conn.close()
- 
-def salvar_no_banco_batch(df):
-    """Salva os dados no banco de dados DuckDB em batch"""
-    if df.empty:
-        return
+def load_csv_data():
+    """Carrega dados do arquivo CSV consolidado"""
+    global data, last_modified_time
     
     try:
-        conn = duckdb.connect(DB_PATH)
+        # Baixar o CSV
+        csv_content = download_csv_from_drive()
+        if csv_content is None:
+            return pd.DataFrame()
         
-        # Remove duplicatas dentro do DataFrame
-        df = df.drop_duplicates(subset=['numero_pedido', 'produto'])
+        # Carregar dados do CSV
+        df = pd.read_csv(csv_content)
         
-        # Insere em batch usando COPY FROM para melhor performance
-        # Primeiro, salvar em CSV temporário
-        temp_csv = 'temp_pedidos.csv'
-        df.to_csv(temp_csv, index=False, header=False)
+        # Verificar se o DataFrame não está vazio
+        if df.empty:
+            return pd.DataFrame()
         
-        # Usar COPY FROM para inserir dados em massa
-        conn.execute(f'''
-            COPY pedidos FROM '{temp_csv}' 
-            (DELIMITER ',', HEADER false)
-        ''')
+        # Processar dados
+        df['DATA'] = pd.to_datetime(df['DATA'], errors='coerce')
+        df['VALOR'] = pd.to_numeric(df['VALOR'], errors='coerce')
         
-        # Remover arquivo temporário
-        if os.path.exists(temp_csv):
-            os.remove(temp_csv)
+        # Filtrar datas inválidas
+        df = df.dropna(subset=['DATA'])
         
-        conn.commit()
+        # Ordenar por data
+        df = df.sort_values('DATA')
         
-    except Exception as e:
-        st.error(f"Erro ao salvar no banco em batch: {e}")
-        # Fallback para inserção linha a linha se o CSV falhar
-        try:
-            for _, row in df.iterrows():
-                conn.execute('''
-                    INSERT OR IGNORE INTO pedidos 
-                    (numero_pedido, data, cliente, valor_total, produto, quantidade, cidade, estado, telefone, arquivo_origem)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    row['numero_pedido'], row['data'], row['cliente'], row['valor_total'],
-                    row['produto'], row['quantidade'], row['cidade'], row['estado'],
-                    row['telefone'], row['arquivo_origem']
-                ))
-            conn.commit()
-        except Exception as e2:
-            st.error(f"Erro no fallback de inserção: {e2}")
-    finally:
-        conn.close()
- 
-def carregar_do_banco():
-    """Carrega todos os dados do banco de dados DuckDB"""
-    try:
-        conn = duckdb.connect(DB_PATH)
-        # Usar SQL para melhor performance
-        df = conn.execute('''
-            SELECT numero_pedido, data, cliente, valor_total, produto, 
-                   quantidade, cidade, estado, telefone, arquivo_origem
-            FROM pedidos
-            ORDER BY data DESC
-        ''').fetchdf()
-        conn.close()
+        # Atualizar timestamp
+        last_modified_time = time.time()
+        
         return df
+        
     except Exception as e:
-        st.error(f"Erro ao carregar do banco: {e}")
+        st.error(f"Erro ao carregar dados do CSV: {e}")
         return pd.DataFrame()
  
-def carregar_do_parquet():
-    """Carrega os dados do arquivo Parquet se existir"""
-    if os.path.exists(PARQUET_PATH):
-        try:
-            return pd.read_parquet(PARQUET_PATH)
-        except Exception as e:
-            st.error(f"Erro ao carregar Parquet: {e}")
-    return pd.DataFrame()
+def check_for_new_file():
+    """Verifica manualmente por atualizações no arquivo CSV"""
+    global data
+    print("Verificando atualizações...")
+    new_data = load_csv_data()
+    if not new_data.empty:
+        data = new_data
+        st.session_state.df_dados = data.copy()
+        st.session_state.ultima_atualizacao = dt.now()
+        update_dashboard()
+        st.success("✅ Dados atualizados com sucesso!")
+    else:
+        st.warning("Nenhuma atualização encontrada")
  
-def salvar_em_parquet(df):
-    """Salva os dados em formato Parquet"""
-    try:
-        df.to_parquet(PARQUET_PATH, engine='pyarrow')
-    except Exception as e:
-        st.error(f"Erro ao salvar Parquet: {e}")
- 
-def limpar_banco_de_dados():
-    """Limpa o banco de dados DuckDB (função de manutenção)"""
-    try:
-        conn = duckdb.connect(DB_PATH)
-        conn.execute("DELETE FROM pedidos")
-        conn.execute("DELETE FROM arquivos_processados")
-        conn.commit()
-        conn.close()
-        
-        # Remover arquivo Parquet
-        if os.path.exists(PARQUET_PATH):
-            os.remove(PARQUET_PATH)
-            
-        # Limpar cache
-        if 'df_dados' in st.session_state:
-            del st.session_state.df_dados
-        if 'ultima_atualizacao' in st.session_state:
-            del st.session_state.ultima_atualizacao
-            
-        st.success("Banco de dados limpo com sucesso!")
-    except Exception as e:
-        st.error(f"Erro ao limpar banco: {e}")
+def scheduler():
+    """Agendador automático de verificação a cada 30 minutos"""
+    while True:
+        time.sleep(1800)  # 30 minutos em segundos
+        print("Verificação automática agendada...")
+        check_for_new_file()
  
 # ===== FUNÇÕES DE PROCESSAMENTO =====
  
@@ -236,7 +134,6 @@ def process_excel_data(df, file_name):
         if df.empty or len(df) < 20 or len(df.columns) < 26:
             return pd.DataFrame()
         
-        # Extrair dados essenciais de forma mais eficiente
         try:
             data_pedido_raw = df.iloc[1, 15] if len(df) > 1 and len(df.columns) > 15 else None
             if pd.notna(data_pedido_raw):
@@ -247,7 +144,6 @@ def process_excel_data(df, file_name):
         except:
             data_pedido = None
         
-        # Extrair valores Z19-Z24 de forma mais eficiente
         valores_z19_z24 = []
         for i in range(18, 24):
             try:
@@ -263,7 +159,6 @@ def process_excel_data(df, file_name):
         
         valor_total_z = sum(valores_z19_z24) if valores_z19_z24 else 0
         
-        # Extrair informações básicas
         try:
             numero_pedido = str(df.iloc[1, 8]) if len(df) > 1 and len(df.columns) > 8 else "Desconhecido"
         except:
@@ -289,7 +184,6 @@ def process_excel_data(df, file_name):
         except:
             estado = "Desconhecido"
         
-        # Processar produtos de forma mais eficiente
         for i in range(18, 24):
             try:
                 if i < len(df) and 0 < len(df.columns) and 2 < len(df.columns):
@@ -322,98 +216,10 @@ def process_excel_data(df, file_name):
     
     return pd.DataFrame(pedidos)
  
-def processar_arquivo(file_info, service):
-    """Processa um único arquivo de forma otimizada"""
-    try:
-        # Verificar se o arquivo já foi processado
-        if arquivo_foi_processado(file_info['name'], file_info['modifiedTime']):
-            return pd.DataFrame()
-        
-        # Baixar arquivo
-        request = service.files().get_media(fileId=file_info['id'])
-        file_content = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_content, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-        
-        # Processar arquivo
-        try:
-            df = pd.read_excel(file_content, header=None)
-        except:
-            try:
-                df = pd.read_excel(file_content, header=0)
-            except:
-                try:
-                    df = pd.read_excel(file_content, header=None, skiprows=5)
-                except:
-                    return pd.DataFrame()
-        
-        result = process_excel_data(df, file_info['name'])
-        
-        if not result.empty:
-            # Marcar arquivo como processado
-            marcar_arquivo_processado(file_info['name'], file_info['modifiedTime'])
-        
-        return result
-    except Exception as e:
-        st.error(f"Erro ao processar arquivo {file_info['name']}: {e}")
-        return pd.DataFrame()
- 
-def processar_lote_paralelo(lote, service):
-    """Processa um lote de arquivos em paralelo"""
-    df_todos = pd.DataFrame()
-    
-    try:
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            # Mapeia cada arquivo para sua função de processamento
-            futures = [executor.submit(processar_arquivo, file_info, service) for file_info in lote]
-            
-            # Aguarda o processamento de todos os arquivos
-            for future in futures:
-                result = future.result()
-                if not result.empty:
-                    # Remove duplicatas dentro do arquivo processado
-                    result = result.drop_duplicates(subset=['numero_pedido', 'produto'])
-                    df_todos = pd.concat([df_todos, result], ignore_index=True)
-        
-        return df_todos
-    except Exception as e:
-        st.error(f"Erro ao processar lote em paralelo: {e}")
-        return pd.DataFrame()
- 
-def processar_arquivos_restantes(arquivos_restantes, service):
-    """Processa os arquivos restantes em background"""
-    try:
-        df_restantes = pd.DataFrame()
-        
-        # Processa em lotes menores para não bloquear a interface
-        for lote_inicio in range(0, len(arquivos_restantes), TAMANHO_LOTE):
-            lote_fim = min(lote_inicio + TAMANHO_LOTE, len(arquivos_restantes))
-            lote_atual = arquivos_restantes[lote_inicio:lote_fim]
-            
-            # Processa o lote atual
-            df_lote = processar_lote_paralelo(lote_atual, service)
-            
-            if not df_lote.empty:
-                # Salva no banco e parquet
-                salvar_no_banco_batch(df_lote)
-                salvar_em_parquet(df_lote)
-                
-                # Atualiza o cache
-                if 'df_dados' in st.session_state:
-                    st.session_state.df_dados = pd.concat([st.session_state.df_dados, df_lote], ignore_index=True)
-                    st.session_state.ultima_atualizacao = dt.now()
-                
-                # Mostra notificação
-                st.toast(f"✅ {len(df_lote)} novos pedidos adicionados!", icon="🎉")
-        
-    except Exception as e:
-        logger.error(f"Erro ao processar arquivos restantes: {str(e)}", exc_info=True)
- 
 def carregar_dados_google_drive():
     """
     Função para carregar dados do Google Drive com processamento incremental e exibição rápida
+    MODIFICADA PARA USAR CSV CONSOLIDADO
     """
     # Verificar se os dados já estão em cache e são recentes (menos de 30 minutos)
     if 'df_dados' in st.session_state and 'ultima_atualizacao' in st.session_state:
@@ -421,117 +227,21 @@ def carregar_dados_google_drive():
            (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 1800:
             return st.session_state.df_dados
     
-    # Inicializar banco de dados se necessário
-    init_db()
+    # Se não tiver dados, tenta carregar do CSV consolidado
+    st.info("🔄 Carregando dados do CSV consolidado...")
+    df_csv = load_csv_data()
     
-    # Tenta carregar do Parquet primeiro (mais rápido)
-    df_parquet = carregar_do_parquet()
-    if not df_parquet.empty:
-        st.session_state.df_dados = df_parquet
+    if not df_csv.empty:
+        # Atualizar cache
+        st.session_state.df_dados = df_csv.copy()
         st.session_state.ultima_atualizacao = dt.now()
-        # Inicia o processamento em background
-        st.sidebar.info("🔄 Novos dados em background...")
-        return df_parquet
-    
-    # Se não tiver Parquet, tenta carregar do banco
-    df_banco = carregar_do_banco()
-    if not df_banco.empty:
-        st.session_state.df_dados = df_banco
-        st.session_state.ultima_atualizacao = dt.now()
-        # Inicia o processamento em background
-        st.sidebar.info("🔄 Novos dados em background...")
-        return df_banco
-    
-    # Se não tiver dados, mostra mensagem de carregamento
-    placeholder = st.empty()
-    with placeholder.container():
-        st.markdown("### 🔄 CARREGANDO ARQUIVOS DO GOOGLE DRIVE")
         
-        # Autenticar com o Google Drive
-        try:
-            credentials_info = {
-                "type": st.secrets["gcp_service_account"]["type"],
-                "project_id": st.secrets["gcp_service_account"]["project_id"],
-                "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-                "private_key": st.secrets["gcp_service_account"]["private_key"],
-                "client_email": st.secrets["gcp_service_account"]["client_email"],
-                "client_id": st.secrets["gcp_service_account"]["client_id"],
-                "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-                "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-                "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-                "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
-            }
-            
-            creds = service_account.Credentials.from_service_account_info(
-                credentials_info, scopes=SCOPES
-            )
-            
-            service = build('drive', 'v3', credentials=creds)
-            
-            # Listar arquivos
-            query = f"parents in '{FOLDER_ID}' and mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
-            page_token = None
-            all_files = []
-            
-            while True:
-                results = service.files().list(
-                    q=query, 
-                    spaces='drive', 
-                    fields='nextPageToken, files(id, name, modifiedTime, size)',
-                    orderBy="modifiedTime desc",
-                    pageToken=page_token
-                ).execute()
-                
-                files = results.get('files', [])
-                all_files.extend(files)
-                
-                page_token = results.get('nextPageToken', None)
-                if not page_token:
-                    break
-            
-            if not all_files:
-                st.warning("Nenhum arquivo encontrado na pasta 'pedidos' do Google Drive")
-                return pd.DataFrame()
-            
-            # Ordenar arquivos pelo número do pedido (decrescente)
-            all_files_sorted = sorted(all_files, key=lambda x: extrair_numero_pedido(x['name']), reverse=True)
-            
-            # Processar apenas os primeiros arquivos para inicialização rápida
-            lote_principal = all_files_sorted[:TAMANHO_LOTE_INICIAL]
-            arquivos_restantes = all_files_sorted[TAMANHO_LOTE_INICIAL:]
-            
-            st.info(f"Encontrados {len(all_files_sorted)} arquivos. Processando {len(lote_principal)} arquivos para inicialização rápida...")
-            
-            # Processar em paralelo
-            df_todos = processar_lote_paralelo(lote_principal, service)
-            
-            if not df_todos.empty:
-                # Salvar no banco e parquet
-                salvar_no_banco_batch(df_todos)
-                salvar_em_parquet(df_todos)
-                
-                # Atualizar cache
-                st.session_state.df_dados = df_todos.copy()
-                st.session_state.ultima_atualizacao = dt.now()
-                
-                # Iniciar processamento dos arquivos restantes em background
-                threading.Thread(target=processar_arquivos_restantes, args=(arquivos_restantes, service), daemon=True).start()
-                
-                # Limpar interface de carregamento
-                placeholder.empty()
-                
-                st.success(f"✅ Processamento inicial concluído! {len(df_todos)} pedidos carregados")
-                st.sidebar.info("🔄 Processando arquivos restantes em background...")
-                
-                return df_todos
-            else:
-                st.warning("Nenhum dado processado nos arquivos iniciais")
-                return pd.DataFrame()
-            
-        except Exception as e:
-            st.error(f"Erro ao carregar dados do Google Drive: {e}")
-            logger.error(f"Erro no carregamento: {str(e)}", exc_info=True)
-            return pd.DataFrame()
+        st.success(f"✅ Dados carregados do CSV! {len(df_csv)} pedidos")
+        st.sidebar.info("🔄 Novos dados em background...")
+        return df_csv
+    else:
+        st.warning("⚠️ Nenhum dado encontrado no CSV")
+        return pd.DataFrame()
  
 # ===== FUNÇÕES DE ANÁLISE E VISUALIZAÇÃO =====
  
@@ -617,29 +327,12 @@ def classificar_produto(descricao):
         return "PEÇAS AVULSAS"
  
 def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
-    # Usar DuckDB para consultas mais rápidas
     try:
-        conn = duckdb.connect()
-        conn.register('df', df)
+        # Consulta direta no DataFrame (sem DuckDB)
+        valor_kit_ar = df[df['produto'].str.contains('KIT', na=False) & ~df['produto'].str.contains('KIT ROSCA', na=False)]['valor_total'].sum()
+        valor_pecas_avulsas = df[df['produto'].isin(['PEÇAS AVULSAS', 'KITS ROSCA'])]['valor_total'].sum()
+        pedidos_unicos = df['numero_pedido'].nunique()
         
-        # Consulta SQL para filtrar e calcular
-        query = f'''
-            SELECT 
-                SUM(CASE WHEN produto LIKE 'KIT%' AND produto NOT LIKE '%KIT ROSCA%' THEN valor_total ELSE 0 END) as valor_kit_ar,
-                SUM(CASE WHEN produto IN ('PEÇAS AVULSAS', 'KITS ROSCA') THEN valor_total ELSE 0 END) as valor_pecas_avulsas,
-                COUNT(DISTINCT numero_pedido) as pedidos_unicos
-            FROM df 
-            WHERE data BETWEEN '{inicio_meta.date()}' AND '{fim_meta.date()}'
-        '''
-        
-        result = conn.execute(query).fetchdf()
-        conn.close()
-        
-        if result.empty:
-            return pd.DataFrame(), 0, False
-        
-        valor_kit_ar = result.iloc[0]['valor_kit_ar']
-        valor_pecas_avulsas = result.iloc[0]['valor_pecas_avulsas']
         valor_total_vendido = valor_kit_ar + valor_pecas_avulsas
         
         percentual_kit_ar = 0.007
@@ -683,35 +376,30 @@ def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
  
 def identificar_lojistas_recuperar(df):
     try:
-        conn = duckdb.connect()
-        conn.register('df', df)
+        # Consulta direta no DataFrame
+        lojistas = df.groupby('cliente').agg(
+            num_pedidos=('numero_pedido', 'count'),
+            ultima_compra=('data', 'max')
+        ).reset_index()
         
-        # Consulta SQL para identificar lojistas
-        query = '''
-            SELECT 
-                cliente,
-                COUNT(*) as num_pedidos,
-                MAX(data) as ultima_compra
-            FROM df 
-            GROUP BY cliente
-            HAVING COUNT(*) > 3 AND 
-                   (CURRENT_DATE - MAX(data)) / 30 > 3
-        '''
+        # Filtrar lojistas com mais de 3 pedidos e mais de 3 meses sem comprar
+        hoje = dt.now()
+        lojistas['meses_sem_comprar'] = (hoje - lojistas['ultima_compra']).dt.days / 30
         
-        lojistas = conn.execute(query).fetchdf()
-        conn.close()
+        lojistas_filtrados = lojistas[
+            (lojistas['num_pedidos'] > 3) & 
+            (lojistas['meses_sem_comprar'] > 3)
+        ]
         
-        if not lojistas.empty:
-            # Juntar com dados completos do último pedido
-            df_completo = df.sort_values('data').drop_duplicates(subset=['cliente'], keep='last')
-            lojistas_recuperar = pd.merge(
-                lojistas[['cliente', 'num_pedidos', 'ultima_compra']], 
-                df_completo, 
-                on='cliente'
-            )
-            return lojistas_recuperar
+        # Juntar com dados completos do último pedido
+        df_completo = df.sort_values('data').drop_duplicates(subset=['cliente'], keep='last')
+        lojistas_recuperar = pd.merge(
+            lojistas_filtrados[['cliente', 'num_pedidos', 'ultima_compra']], 
+            df_completo, 
+            on='cliente'
+        )
         
-        return pd.DataFrame()
+        return lojistas_recuperar
         
     except Exception as e:
         st.error(f"Erro ao identificar lojistas: {e}")
@@ -719,26 +407,19 @@ def identificar_lojistas_recuperar(df):
  
 def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     try:
-        conn = duckdb.connect()
-        conn.register('df', df)
-        
-        # Consulta SQL para gerar tabela
-        query = f'''
-            SELECT DISTINCT
-                data as data_pedido,
-                numero_pedido,
-                cliente,
-                valor_total as valor_pedido
-            FROM df 
-            WHERE data BETWEEN '{inicio_meta.date()}' AND '{fim_meta.date()}'
-            ORDER BY data_pedido
-        '''
-        
-        tabela = conn.execute(query).fetchdf()
-        conn.close()
+        # Filtrar pedidos no período
+        tabela = df[
+            (df['data'] >= inicio_meta) & 
+            (df['data'] <= fim_meta)
+        ][['data', 'numero_pedido', 'cliente', 'valor_total']].copy()
         
         if not tabela.empty:
-            tabela["data_pedido"] = tabela["data_pedido"].dt.strftime("%d/%m/%Y")
+            tabela['data'] = tabela['data'].dt.strftime("%d/%m/%Y")
+            tabela = tabela.rename(columns={
+                'data': 'data_pedido',
+                'valor_total': 'valor_pedido'
+            })
+            tabela = tabela.drop_duplicates()
         
         return tabela
         
@@ -754,23 +435,6 @@ if 'df_dados' not in st.session_state:
 if 'ultima_atualizacao' not in st.session_state:
     st.session_state.ultima_atualizacao = None
  
-# Inicializar banco de dados
-init_db()
- 
-# Carregar dados do banco ou Parquet se existirem
-if st.session_state.df_dados.empty:
-    # Tentar carregar do Parquet primeiro (mais rápido)
-    df_parquet = carregar_do_parquet()
-    if not df_parquet.empty:
-        st.session_state.df_dados = df_parquet
-        st.session_state.ultima_atualizacao = dt.now()
-    else:
-        # Tentar carregar do banco
-        df_banco = carregar_do_banco()
-        if not df_banco.empty:
-            st.session_state.df_dados = df_banco
-            st.session_state.ultima_atualizacao = dt.now()
- 
 try:
     estados_df = pd.read_csv("estados.csv")
     municipios_df = pd.read_csv("municipios.csv")
@@ -783,7 +447,7 @@ except Exception as e:
     st.error(f"Erro ao carregar arquivos de referência: {e}")
     st.stop()
  
-st.set_page_config(layout="wide", page_title="Dashboard de Vendas com DuckDB")
+st.set_page_config(layout="wide", page_title="Dashboard de Vendas com CSV Consolidado")
  
 st.markdown("""
     <style>
@@ -833,12 +497,6 @@ st.markdown("""
             font-weight: 500; 
             text-transform: uppercase; 
             letter-spacing: 1px; 
-        }
-        .stApp { 
-            padding: 30px; 
-            height: 100%; 
-            width: 100%; 
-            box-sizing: border-box; 
         }
         .stCaption { 
             color: #B0B0B0; 
@@ -929,7 +587,7 @@ st.markdown("""
             color: #4A90E2;
             font-weight: bold;
         }
-        .duckdb-info {
+        .csv-info {
             background: linear-gradient(135deg, #3A3A3A, #2A2A2A);
             border: 1px solid #4A4A4A;
             border-radius: 8px;
@@ -943,68 +601,66 @@ st.markdown("""
  
 # ===== SIDEBAR =====
  
-st.sidebar.title("🦆 MENU DE SINCRONIZAÇÃO - DUCKDB")
- 
+st.sidebar.title("📊 MENU DE SINCRONIZAÇÃO - CSV CONSOLIDADO")
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
-st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE - PASTA 'PEDIDOS'")
+st.sidebar.markdown("### 🔄 STATUS DADOS - ARQUIVO CSV")
  
-# Informações do DuckDB
-st.sidebar.markdown('<div class="duckdb-info">', unsafe_allow_html=True)
-st.sidebar.markdown("### 🦆 BANCO DE DADOS DUCKDB")
+st.sidebar.markdown('<div class="csv-info">', unsafe_allow_html=True)
+st.sidebar.markdown("### 📁 ARQUIVO CSV CONSOLIDADO")
 try:
-    conn = duckdb.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM pedidos")
-    total_pedidos = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM arquivos_processados")
-    arquivos_processados = cursor.fetchone()[0]
-    conn.close()
-    
-    st.sidebar.success(f"✅ DuckDB ativo")
-    st.sidebar.caption(f"📊 {total_pedidos} pedidos armazenados")
-    st.sidebar.caption(f"📁 {arquivos_processados} arquivos processados")
-except Exception as e:
-    st.sidebar.error(f"❌ Erro no DuckDB: {e}")
+    if 'ultima_atualizacao' in st.session_state and st.session_state.ultima_atualizacao:
+        st.sidebar.success(f"✅ CSV carregado")
+        st.sidebar.caption(f"📊 {len(st.session_state.df_dados)} pedidos carregados")
+        st.sidebar.caption(f"🕒 Última atualização: {st.session_state.ultima_atualizacao.strftime('%d/%m/%Y %H:%M')}")
+    else:
+        st.sidebar.warning("⚠️ Nenhum dado carregado")
+except:
+    st.sidebar.error("❌ Erro ao carregar dados")
 st.sidebar.markdown('</div>', unsafe_allow_html=True)
  
 # Botão para recarregar dados
 if st.sidebar.button("🔄 Recarregar Dados"):
-    # Limpar cache
     if 'df_dados' in st.session_state:
         del st.session_state.df_dados
     if 'ultima_atualizacao' in st.session_state:
         del st.session_state.ultima_atualizacao
     st.rerun()
  
-# Botão para exportar dados do banco
-if st.sidebar.button("💾 Exportar Banco de Dados"):
-    df_banco = carregar_do_banco()
+# Botão para exportar dados
+if st.sidebar.button("💾 Exportar Dados"):
+    df_banco = st.session_state.df_dados.copy()
     if not df_banco.empty:
         csv = df_banco.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="Download CSV Completo",
             data=csv,
-            file_name='banco_de_dados_completo.csv',
+            file_name='dados_completos.csv',
             mime='text/csv'
         )
- 
-# Botão para limpar banco
-limpar_banco_de_dados()
  
 st.sidebar.markdown('</div>', unsafe_allow_html=True)
  
 # ===== CONTEÚDO PRINCIPAL =====
  
+# Criar botão manual de atualização
+update_button = st.button(
+    "🔄 Verificar Atualização Manual",
+    help="Clique para verificar manualmente por atualizações no CSV",
+    key="update_button"
+)
+ 
+if update_button:
+    check_for_new_file()
+ 
 # Carregar dados com tratamento robusto de erros
 try:
     df = carregar_dados_google_drive()
     
-    # Verificação crítica após carregamento
     if df.empty:
         st.error("⚠️ Falha crítica: Nenhum dado foi carregado")
         st.info("Soluções possíveis:")
         st.markdown("- Verifique a conexão com o Google Drive")
-        st.markdown("- Confirme se há arquivos na pasta 'pedidos'")
+        st.markdown("- Confirme se há dados no arquivo CSV")
         st.markdown("- Tente recarregar os dados manualmente")
         st.stop()
         
@@ -1014,7 +670,6 @@ except Exception as e:
     st.stop()
  
 if not df.empty:
-    # Renomear colunas para compatibilidade
     df = df.rename(columns={
         'numero_pedido': 'Número do Pedido',
         'data': 'Data',
@@ -1028,7 +683,7 @@ if not df.empty:
         'arquivo_origem': 'Arquivo Origem'
     })
     
-    st.sidebar.success("✅ Conectado ao Google Drive")
+    st.sidebar.success("✅ Conectado ao CSV")
     st.sidebar.caption(f"📁 {len(df)} pedidos carregados")
     if 'ultima_atualizacao' in st.session_state:
         st.sidebar.caption(f"🕒 Última atualização: {st.session_state.ultima_atualizacao.strftime('%d/%m/%Y %H:%M')}")
@@ -1524,32 +1179,13 @@ if not df.empty:
             inicio_meta = dt(ano_meta, mes_meta_num - 1, 26).replace(hour=0, minute=0, second=0)
             fim_meta = dt(ano_meta, mes_meta_num, 25).replace(hour=23, minute=59, second=59)
         
-        # Usar DuckDB para consulta otimizada
         try:
-            conn = duckdb.connect()
-            conn.register('df', df)
+            # Filtrar pedidos no período
+            df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)]
             
-            # Consulta SQL para obter dados da meta
-            query = f'''
-                SELECT 
-                    COUNT(DISTINCT numero_pedido) as pedidos_unicos,
-                    SUM(valor_total) as valor_total_vendido
-                FROM df 
-                WHERE data BETWEEN '{inicio_meta.date()}' AND '{fim_meta.date()}'
-            '''
-            
-            result = conn.execute(query).fetchdf()
-            conn.close()
-            
-            if result.empty:
-                valor_total_vendido = 0
-                total_pedidos = 0
-                pedidos_unicos = 0
-            else:
-                valor_total_vendido = result.iloc[0]['valor_total_vendido']
-                total_pedidos = len(df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)])
-                pedidos_unicos = result.iloc[0]['pedidos_unicos']
-            
+            valor_total_vendido = df_meta['Valor Total Z19-Z24'].sum()
+            total_pedidos = len(df_meta)
+            pedidos_unicos = df_meta['Número do Pedido'].nunique()
             duplicatas = total_pedidos - pedidos_unicos
             
         except Exception as e:
@@ -1634,9 +1270,6 @@ if not df.empty:
         st.dataframe(resultados.style.format({'Valor (R$)': 'R$ {:,.2f}'}), width="stretch")
         
         st.markdown('<div class="ganhos-destaque">', unsafe_allow_html=True)
-        st.markdown("### Ganhos Estimados")
-        ganhos_totais = resultados.iloc[-1, 1]
-        st.markdown(f'<div class="ganhhos-destaque">', unsafe_allow_html=True)
         st.markdown("### Ganhos Estimados")
         ganhos_totais = resultados.iloc[-1, 1]
         st.markdown(f'<div class="ganhos-valor">R$ {ganhos_totais:,.2f}</div>', unsafe_allow_html=True)
