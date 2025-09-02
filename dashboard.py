@@ -1,5 +1,5 @@
 import os
-from httplib2 import Credentials
+# 移除错误的导入: from httplib2 import Credentials
 import pandas as pd
 import streamlit as st
 import calendar
@@ -15,12 +15,11 @@ from datetime import datetime as dt
 import time
 from workalendar.america import Brazil
 import io
-from google.oauth2 import service_account
+from google.oauth2 import service_account  # 确保使用正确的Credentials类
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import requests
  
-
  
 # Configurações de autenticação do Google
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
@@ -31,15 +30,16 @@ data = None
  
 PASTA_ID = "1FfiukpgvZL92AnRcj1LxE6QW195JLSMY"  # ID da pasta do Google Drive
 NOME_ARQUIVO = "dados_extraidos.parquet"  # Nome do arquivo Parquet a ser lido
-
+ 
 # === Autenticação com Google Drive usando st.secrets ===
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
-creds = Credentials.from_service_account_info(
+# 修复: 使用正确的Credentials类
+creds = service_account.Credentials.from_service_account_info(
     st.secrets["gcp_service_account"],
     scopes=SCOPES
 )
 service = build("drive", "v3", credentials=creds)
-
+ 
 # === Função para buscar arquivo pelo nome dentro de uma pasta ===
 def buscar_arquivo_por_nome(nome_arquivo, pasta_id):
     query = f"'{pasta_id}' in parents and name='{nome_arquivo}' and trashed=false"
@@ -49,7 +49,7 @@ def buscar_arquivo_por_nome(nome_arquivo, pasta_id):
         st.error(f"Arquivo '{nome_arquivo}' não encontrado na pasta do Drive.")
         return None
     return arquivos[0]["id"]
-
+ 
 # === Função para ler Parquet direto do Drive em memória ===
 def ler_parquet_drive(file_id):
     request = service.files().get_media(fileId=file_id)
@@ -61,18 +61,20 @@ def ler_parquet_drive(file_id):
         # opcional: st.write(f"Download {int(status.progress() * 100)}%")
     fh.seek(0)
     return pd.read_parquet(fh)
-
+ 
 # === Carregar dados ===
 file_id = buscar_arquivo_por_nome(NOME_ARQUIVO, PASTA_ID)
 if file_id:
     df = ler_parquet_drive(file_id)
 else:
     st.stop()  # para o dashboard se não encontrar o arquivo
+ 
 def check_for_new_file():
     """Verifica manualmente por atualizações no arquivo CSV"""
     global data
     print("Verificando atualizações...")
-    new_data = load_parquet_data()
+    # 修复: 使用正确的函数名
+    new_data = ler_parquet_drive(buscar_arquivo_por_nome(NOME_ARQUIVO, PASTA_ID))
     if not new_data.empty:
         data = new_data
         st.session_state.df_dados = data.copy()
@@ -188,9 +190,14 @@ def carregar_dados_google_drive():
         if st.session_state.ultima_atualizacao is not None and \
            (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 1800:
             return st.session_state.df_dados
-
+ 
     st.info("🔄 Carregando dados do Parquet consolidado...")
-    df_parquet = load_parquet_data()
+    # 修复: 使用正确的函数名
+    file_id = buscar_arquivo_por_nome(NOME_ARQUIVO, PASTA_ID)
+    if file_id:
+        df_parquet = ler_parquet_drive(file_id)
+    else:
+        df_parquet = pd.DataFrame()
     
     if not df_parquet.empty:
         st.session_state.df_dados = df_parquet.copy()
@@ -200,6 +207,7 @@ def carregar_dados_google_drive():
     else:
         st.warning("⚠️ Nenhum dado encontrado no Parquet")
         return pd.DataFrame()
+ 
 # ===== FUNÇÕES DE ANÁLISE E VISUALIZAÇÃO =====
  
 def verificar_duplicatas(df):
