@@ -10,9 +10,18 @@ from pathlib import Path
 from fuzzywuzzy import process, fuzz
 import unicodedata
 import numpy as np
+import math
+import sys
 from datetime import datetime as dt
+import time
+import json
 from workalendar.america import Brazil
+import gc
 import logging
+import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
+import duckdb
  
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
@@ -93,6 +102,11 @@ def carregar_dados_google_drive():
             # Carregar dados do Parquet
             df = pd.read_parquet(file_content)
             
+            # Verificar se o DataFrame não está vazio
+            if df.empty:
+                st.warning("⚠️ O arquivo Parquet está vazio")
+                return pd.DataFrame()
+            
             # Atualizar cache
             st.session_state.df_dados = df.copy()
             st.session_state.ultima_atualizacao = dt.now()
@@ -106,7 +120,7 @@ def carregar_dados_google_drive():
             return df
             
         except Exception as e:
-            st.error(f"Erro ao carregar dados do Google Drive: {e}")
+            st.error(f"❌ Erro ao carregar dados do Google Drive: {str(e)}")
             logger.error(f"Erro no carregamento: {str(e)}", exc_info=True)
             return pd.DataFrame()
  
@@ -515,8 +529,15 @@ if not df.empty:
     
     st.sidebar.success("✅ Conectado ao Google Drive")
     st.sidebar.caption(f"📁 {len(df)} pedidos carregados")
-    if 'ultima_atualizacao' in st.session_state:
-        st.sidebar.caption(f"🕒 Última atualização: {st.session_state.ultima_atualizacao.strftime('%d/%m/%Y %H:%M')}")
+    
+    # Verificação segura da data de atualização
+    if 'ultima_atualizacao' in st.session_state and st.session_state.ultima_atualizacao is not None:
+        try:
+            st.sidebar.caption(f"🕒 Última atualização: {st.session_state.ultima_atualizacao.strftime('%d/%m/%Y %H:%M')}")
+        except Exception as e:
+            st.sidebar.caption(f"🕒 Erro ao formatar data: {str(e)}")
+    else:
+        st.sidebar.caption("🕒 Nenhuma atualização registrada")
 else:
     st.sidebar.error("❌ Erro na conexão")
     st.sidebar.caption("Verifique a autenticação")
