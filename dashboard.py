@@ -15,7 +15,7 @@ import sys
 from datetime import datetime as dt
 import time
 import json
-from workalendar.america import Brazil
+from workcalendar.america import Brazil
 import gc
 import logging
 import re
@@ -512,32 +512,23 @@ except Exception as e:
     logger.error(f"Erro fatal: {str(e)}", exc_info=True)
     st.stop()
  
+# Seção de status - versão completamente corrigida
 if not df.empty:
-    # Renomear colunas para compatibilidade
-    df = df.rename(columns={
-        'numero_pedido': 'Número do Pedido',
-        'data': 'Data',
-        'cliente': 'Cliente',
-        'valor_total': 'Valor Total Z19-Z24',
-        'produto': 'Produto',
-        'quantidade': 'Quantidade',
-        'cidade': 'Cidade',
-        'estado': 'Estado',
-        'telefone': 'Telefone',
-        'arquivo_origem': 'Arquivo Origem'
-    })
-    
     st.sidebar.success("✅ Conectado ao Google Drive")
     st.sidebar.caption(f"📁 {len(df)} pedidos carregados")
     
-    # Verificação segura da data de atualização
-    if 'ultima_atualizacao' in st.session_state and st.session_state.ultima_atualizacao is not None:
+    # Correção robusta para o erro de formatação de data
+    ultima_atualizacao_str = "Nenhuma atualização registrada"
+    if 'ultima_atualizacao' in st.session_state:
         try:
-            st.sidebar.caption(f"🕒 Última atualização: {st.session_state.ultima_atualizacao.strftime('%d/%m/%Y %H:%M')}")
-        except Exception as e:
-            st.sidebar.caption(f"🕒 Erro ao formatar data: {str(e)}")
-    else:
-        st.sidebar.caption("🕒 Nenhuma atualização registrada")
+            if st.session_state.ultima_atualizacao is not None:
+                ultima_atualizacao_str = st.session_state.ultima_atualizacao.strftime('%d/%m/%Y %H:%M')
+            else:
+                ultima_atualizacao_str = "Nenhuma atualização registrada"
+        except (AttributeError, TypeError) as e:
+            ultima_atualizacao_str = f"Erro de formatação: {str(e)}"
+    
+    st.sidebar.caption(f"🕒 Última atualização: {ultima_atualizacao_str}")
 else:
     st.sidebar.error("❌ Erro na conexão")
     st.sidebar.caption("Verifique a autenticação")
