@@ -10,18 +10,10 @@ from pathlib import Path
 from fuzzywuzzy import process, fuzz
 import unicodedata
 import numpy as np
-import math
-import sys
 from datetime import datetime as dt
-import time
-import json
-from workcalendar.america import Brazil
-import gc
 import logging
-import re
-import threading
-from concurrent.futures import ThreadPoolExecutor
-import duckdb
+from workalendar.america import Brazil
+
  
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
