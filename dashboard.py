@@ -30,7 +30,7 @@ last_modified_time = 0
 data = None
  
 PASTA_ID = "1FfiukpgvZL92AnRcj1LxE6QW195JLSMY"  # ID da pasta do Google Drive
-NOME_ARQUIVO = "vendas.parquet"  # Nome do arquivo Parquet a ser lido
+NOME_ARQUIVO = "dados_extraidos.parquet"  # Nome do arquivo Parquet a ser lido
 
 # === Autenticação com Google Drive usando st.secrets ===
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
