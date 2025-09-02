@@ -11,10 +11,9 @@ from fuzzywuzzy import process, fuzz
 import unicodedata
 import numpy as np
 from datetime import datetime as dt
-import logging
 from workalendar.america import Brazil
+import logging
 
- 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -525,13 +524,95 @@ else:
     st.sidebar.error("❌ Erro na conexão")
     st.sidebar.caption("Verifique a autenticação")
  
+# ===== CORREÇÃO DO ERRO KeyError: 'Data' =====
 if not df.empty:
-    df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
-    df["Valor Total Z19-Z24"] = pd.to_numeric(df["Valor Total Z19-Z24"], errors="coerce")
-    df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce")
-    df["Período_Mês"] = df["Data"].dt.to_period("M")
-    df = df.dropna(subset=["Data"])
+    # Mostrar colunas disponíveis para depuração
+    with st.expander("🔍 Verificar colunas disponíveis"):
+        st.write("Colunas no DataFrame:")
+        st.write(df.columns.tolist())
     
+    # Mapeamento de nomes de colunas esperados para nomes reais
+    mapeamento_colunas = {
+        'data': ['data', 'Data', 'DATA', 'date', 'Date', 'DATE'],
+        'valor_total': ['valor_total', 'Valor Total Z19-Z24', 'valor_total', 'Valor Total', 'valor', 'Valor'],
+        'quantidade': ['quantidade', 'Quantidade', 'QUANTIDADE', 'qtd', 'QTD'],
+        'numero_pedido': ['numero_pedido', 'Número do Pedido', 'pedido', 'Pedido', 'NUMERO_PEDIDO'],
+        'cliente': ['cliente', 'Cliente', 'CLIENTE', 'customer', 'Customer'],
+        'produto': ['produto', 'Produto', 'PRODUTO', 'item', 'Item'],
+        'cidade': ['cidade', 'Cidade', 'CIDADE'],
+        'estado': ['estado', 'Estado', 'ESTADO'],
+        'telefone': ['telefone', 'Telefone', 'TELEFONE']
+    }
+    
+    # Função para encontrar coluna correspondente
+    def encontrar_coluna(df, nomes_esperados):
+        for nome in nomes_esperados:
+            if nome in df.columns:
+                return nome
+        return None
+    
+    # Encontrar colunas correspondentes
+    col_data = encontrar_coluna(df, mapeamento_colunas['data'])
+    col_valor = encontrar_coluna(df, mapeamento_colunas['valor_total'])
+    col_quantidade = encontrar_coluna(df, mapeamento_colunas['quantidade'])
+    col_pedido = encontrar_coluna(df, mapeamento_colunas['numero_pedido'])
+    col_cliente = encontrar_coluna(df, mapeamento_colunas['cliente'])
+    col_produto = encontrar_coluna(df, mapeamento_colunas['produto'])
+    col_cidade = encontrar_coluna(df, mapeamento_colunas['cidade'])
+    col_estado = encontrar_coluna(df, mapeamento_colunas['estado'])
+    col_telefone = encontrar_coluna(df, mapeamento_colunas['telefone'])
+    
+    # Verificar se colunas essenciais foram encontradas
+    if not col_data:
+        st.error("❌ Coluna de data não encontrada! Verifique o arquivo Parquet.")
+        st.stop()
+    
+    # Renomear colunas para nomes padrão
+    df_renomeado = df.copy()
+    renomeacoes = {}
+    
+    if col_data and col_data != 'Data':
+        renomeacoes[col_data] = 'Data'
+    if col_valor and col_valor != 'Valor Total Z19-Z24':
+        renomeacoes[col_valor] = 'Valor Total Z19-Z24'
+    if col_quantidade and col_quantidade != 'Quantidade':
+        renomeacoes[col_quantidade] = 'Quantidade'
+    if col_pedido and col_pedido != 'Número do Pedido':
+        renomeacoes[col_pedido] = 'Número do Pedido'
+    if col_cliente and col_cliente != 'Cliente':
+        renomeacoes[col_cliente] = 'Cliente'
+    if col_produto and col_produto != 'Produto':
+        renomeacoes[col_produto] = 'Produto'
+    if col_cidade and col_cidade != 'Cidade':
+        renomeacoes[col_cidade] = 'Cidade'
+    if col_estado and col_estado != 'Estado':
+        renomeacoes[col_estado] = 'Estado'
+    if col_telefone and col_telefone != 'Telefone':
+        renomeacoes[col_telefone] = 'Telefone'
+    
+    # Aplicar renomeações
+    if renomeacoes:
+        df_renomeado = df.rename(columns=renomeacoes)
+        st.info(f"🔄 Colunas renomeadas: {list(renomeacoes.values())}")
+    
+    # Agora usar o DataFrame renomeado
+    df = df_renomeado
+    
+    # Processar dados com as colunas corretas
+    try:
+        df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+        df["Valor Total Z19-Z24"] = pd.to_numeric(df["Valor Total Z19-Z24"], errors="coerce")
+        df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce")
+        df["Período_Mês"] = df["Data"].dt.to_period("M")
+        df = df.dropna(subset=["Data"])
+        
+        st.success("✅ Dados processados com sucesso!")
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao processar dados: {str(e)}")
+        st.stop()
+ 
+if not df.empty:
     anos_disponiveis = sorted(df["Data"].dt.year.unique())
     
     hoje = dt.now()
