@@ -1,4 +1,5 @@
 import os
+from httplib2 import Credentials
 import pandas as pd
 import streamlit as st
 import calendar
@@ -19,10 +20,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import requests
  
-# ===== CONFIGURAÇÕES =====
-# Configurações do CSV consolidado
-CSV_FILE_NAME = 'dados_extraidos.csv'  # Nome do arquivo CSV consolidado
-CSV_URL = 'https://drive.google.com/uc?export=download&id=1FfiukpgvZL92AnRcj1LxE6QW195JLSMY'  # URL do CSV no Google Drive
+
  
 # Configurações de autenticação do Google
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
@@ -31,114 +29,50 @@ SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 last_modified_time = 0
 data = None
  
-# ===== FUNÇÕES DE CARREGAMENTO DE CSV =====
- 
-def download_csv_from_drive():
-    """Baixa o arquivo CSV do Google Drive"""
-    try:
-        # Verificar se temos credenciais
-        if 'gcp_service_account' in st.secrets:
-            credentials_info = {
-                "type": st.secrets["gcp_service_account"]["type"],
-                "project_id": st.secrets["gcp_service_account"]["project_id"],
-                "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-                "private_key": st.secrets["gcp_service_account"]["private_key"],
-                "client_email": st.secrets["gcp_service_account"]["client_email"],
-                "client_id": st.secrets["gcp_service_account"]["client_id"],
-                "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-                "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-                "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-                "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
-            }
-            
-            creds = service_account.Credentials.from_service_account_info(
-                credentials_info, scopes=SCOPES
-            )
-            
-            # Baixar arquivo
-            response = requests.get(CSV_URL, headers={'Authorization': f'Bearer {creds.token}'})
-            response.raise_for_status()
-            return io.StringIO(response.text)
-        else:
-            # Fallback para download direto
-            response = requests.get(CSV_URL)
-            response.raise_for_status()
-            return io.StringIO(response.text)
-            
-    except Exception as e:
-        st.error(f"Erro ao baixar CSV: {e}")
+PASTA_ID = "1FfiukpgvZL92AnRcj1LxE6QW195JLSMY"  # ID da pasta do Google Drive
+NOME_ARQUIVO = "vendas.parquet"  # Nome do arquivo Parquet a ser lido
+
+# === Autenticação com Google Drive usando st.secrets ===
+SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+creds = Credentials.from_service_account_info(
+    st.secrets["gcp_service_account"],
+    scopes=SCOPES
+)
+service = build("drive", "v3", credentials=creds)
+
+# === Função para buscar arquivo pelo nome dentro de uma pasta ===
+def buscar_arquivo_por_nome(nome_arquivo, pasta_id):
+    query = f"'{pasta_id}' in parents and name='{nome_arquivo}' and trashed=false"
+    resultados = service.files().list(q=query, fields="files(id, name)").execute()
+    arquivos = resultados.get("files", [])
+    if not arquivos:
+        st.error(f"Arquivo '{nome_arquivo}' não encontrado na pasta do Drive.")
         return None
-def load_csv_data():
-    """Carrega dados do arquivo CSV consolidado com tratamento robusto"""
-    global data, last_modified_time
-    
-    try:
-        # Baixar o CSV
-        csv_content = download_csv_from_drive()
-        if csv_content is None:
-            return pd.DataFrame()
-        
-        # Detectar delimitador automaticamente
-        import csv
-        csv_content.seek(0)
-        sample = csv_content.read(2048)
-        csv_content.seek(0)
-        try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=[',', ';', '\t', '|'])
-            delimiter = dialect.delimiter
-        except Exception:
-            delimiter = ';'  # fallback padrão
-        
-        # Carregar dados do CSV com tratamento robusto
-        df = pd.read_csv(
-            csv_content,
-            delimiter=delimiter,
-            encoding="utf-8",
-            on_bad_lines="skip"
-        )
-        
-        # Se vazio, retorna DataFrame vazio
-        if df.empty:
-            return pd.DataFrame()
-        
-        # Normalizar nomes de colunas para minúsculas
-        df.columns = [col.lower().strip() for col in df.columns]
-        
-        # Renomear colunas específicas para padronizar
-        df = df.rename(columns={
-            'data': 'data',
-            'valor': 'valor_total'
-        })
-        
-        # Validar colunas obrigatórias (agora em minúsculas)
-        colunas_necessarias = {"data", "valor_total"}
-        if not colunas_necessarias.issubset(set(df.columns)):
-            st.error(f"CSV inválido: colunas esperadas {colunas_necessarias}, mas encontradas {set(df.columns)}")
-            return pd.DataFrame()
-        
-        # Processar dados
-        df["data"] = pd.to_datetime(df["data"], errors="coerce")
-        df["valor_total"] = pd.to_numeric(df["valor_total"], errors="coerce")
-        
-        # Filtrar datas válidas
-        df = df.dropna(subset=["data"])
-        
-        # Ordenar por data
-        df = df.sort_values("data")
-        
-        # Atualizar timestamp
-        last_modified_time = time.time()
-        
-        return df
-    
-    except Exception as e:
-        st.error(f"Erro ao carregar dados do CSV: {e}")
-        return pd.DataFrame()
+    return arquivos[0]["id"]
+
+# === Função para ler Parquet direto do Drive em memória ===
+def ler_parquet_drive(file_id):
+    request = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        status, done = downloader.next_chunk()
+        # opcional: st.write(f"Download {int(status.progress() * 100)}%")
+    fh.seek(0)
+    return pd.read_parquet(fh)
+
+# === Carregar dados ===
+file_id = buscar_arquivo_por_nome(NOME_ARQUIVO, PASTA_ID)
+if file_id:
+    df = ler_parquet_drive(file_id)
+else:
+    st.stop()  # para o dashboard se não encontrar o arquivo
 def check_for_new_file():
     """Verifica manualmente por atualizações no arquivo CSV"""
     global data
     print("Verificando atualizações...")
-    new_data = load_csv_data()
+    new_data = load_parquet_data()
     if not new_data.empty:
         data = new_data
         st.session_state.df_dados = data.copy()
@@ -249,32 +183,23 @@ def process_excel_data(df, file_name):
     return pd.DataFrame(pedidos)
  
 def carregar_dados_google_drive():
-    """
-    Função para carregar dados do Google Drive com processamento incremental e exibição rápida
-    MODIFICADA PARA USAR CSV CONSOLIDADO
-    """
-    # Verificar se os dados já estão em cache e são recentes (menos de 30 minutos)
+    """Carrega dados do Google Drive (agora via Parquet)"""
     if 'df_dados' in st.session_state and 'ultima_atualizacao' in st.session_state:
         if st.session_state.ultima_atualizacao is not None and \
            (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 1800:
             return st.session_state.df_dados
+
+    st.info("🔄 Carregando dados do Parquet consolidado...")
+    df_parquet = load_parquet_data()
     
-    # Se não tiver dados, tenta carregar do CSV consolidado
-    st.info("🔄 Carregando dados do CSV consolidado...")
-    df_csv = load_csv_data()
-    
-    if not df_csv.empty:
-        # Atualizar cache
-        st.session_state.df_dados = df_csv.copy()
+    if not df_parquet.empty:
+        st.session_state.df_dados = df_parquet.copy()
         st.session_state.ultima_atualizacao = dt.now()
-        
-        st.success(f"✅ Dados carregados do CSV! {len(df_csv)} pedidos")
-        st.sidebar.info("🔄 Novos dados em background...")
-        return df_csv
+        st.success(f"✅ Dados carregados do Parquet! {len(df_parquet)} pedidos")
+        return df_parquet
     else:
-        st.warning("⚠️ Nenhum dado encontrado no CSV")
+        st.warning("⚠️ Nenhum dado encontrado no Parquet")
         return pd.DataFrame()
- 
 # ===== FUNÇÕES DE ANÁLISE E VISUALIZAÇÃO =====
  
 def verificar_duplicatas(df):
