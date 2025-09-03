@@ -57,21 +57,21 @@ def carregar_dados_google_drive():
     logger.info("Iniciando carregamento de dados do Google Drive")
     
     try:
-        # Verificar se os dados já estão em cache
+        # Verificar cache
         if 'df_dados' in st.session_state and 'ultima_atualizacao' in st.session_state:
             if st.session_state.ultima_atualizacao is not None and \
                (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 1800:
                 logger.info("Usando dados do cache")
                 return st.session_state.df_dados
-        
+
         placeholder = st.empty()
         with placeholder.container():
             st.markdown("### 🔄 CARREGANDO ARQUIVOS DO GOOGLE DRIVE")
             st.write("Por favor, aguarde...")
-        
+
         logger.info("Autenticando com Google Drive...")
-        
-        # Autenticar com o Google Drive
+
+        # Autenticar com o Google Drive usando st.secrets
         credentials_info = {
             "type": st.secrets["gcp_service_account"]["type"],
             "project_id": st.secrets["gcp_service_account"]["project_id"],
@@ -84,78 +84,84 @@ def carregar_dados_google_drive():
             "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
             "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
         }
-        
+
         creds = service_account.Credentials.from_service_account_info(
             credentials_info, scopes=SCOPES
         )
-        
         service = build('drive', 'v3', credentials=creds)
         logger.info("✅ Autenticação com Google Drive bem-sucedida")
-        
-        # Buscar o arquivo específico
-        logger.info(f"Buscando arquivo: {NOME_ARQUIVO}")
-        query = f"parents in '{PASTA_ID}' and name = '{NOME_ARQUIVO}'"
-        results = service.files().list(
-            q=query,
-            spaces='drive',
-            fields='files(id, name, modifiedTime, size)'
-        ).execute()
-        
-        files = results.get('files', [])
-        logger.info(f"Arquivos encontrados: {len(files)}")
-        
-        if not files:
-            error_msg = f"Arquivo '{NOME_ARQUIVO}' não encontrado na pasta do Google Drive"
+
+        # Procurar primeiro o parquet, se não achar tenta CSV
+        arquivos_alvo = ["dados_extraidos.parquet", "dados_extraidos.csv"]
+        file_info = None
+        nome_encontrado = None
+
+        for nome in arquivos_alvo:
+            query = f"parents in '{PASTA_ID}' and name = '{nome}'"
+            results = service.files().list(
+                q=query,
+                spaces='drive',
+                fields='files(id, name, modifiedTime, size)'
+            ).execute()
+            files = results.get('files', [])
+            if files:
+                file_info = files[0]
+                nome_encontrado = nome
+                break
+
+        if not file_info:
+            error_msg = f"Nenhum dos arquivos esperados ({', '.join(arquivos_alvo)}) foi encontrado na pasta do Google Drive"
             logger.error(error_msg)
             st.error(f"❌ {error_msg}")
             return pd.DataFrame()
-        
-        # Baixar o arquivo
-        file_info = files[0]
+
+        # Baixar arquivo
         logger.info(f"Baixando arquivo: {file_info['name']} (ID: {file_info['id']})")
-        
         request = service.files().get_media(fileId=file_info['id'])
         file_content = io.BytesIO()
         downloader = MediaIoBaseDownload(file_content, request)
         done = False
-        
+
         while not done:
             status, done = downloader.next_chunk()
-            logger.info(f"Progresso do download: {int(status.progress() * 100)}%")
-        
+            if status:
+                logger.info(f"Progresso do download: {int(status.progress() * 100)}%")
+
         logger.info("✅ Download concluído com sucesso")
-        
-        # Carregar dados do Parquet
-        logger.info("Carregando dados do Parquet...")
-        df = pd.read_parquet(file_content)
-        logger.info(f"✅ Dados carregados. Shape: {df.shape}")
-        logger.info(f"Colunas disponíveis: {df.columns.tolist()}")
-        
-        # Verificar se o DataFrame não está vazio
+
+        # Resetar ponteiro para leitura
+        file_content.seek(0)
+
+        # Carregar dependendo do tipo
+        if nome_encontrado.endswith(".parquet"):
+            df = pd.read_parquet(file_content)
+        elif nome_encontrado.endswith(".csv"):
+            df = pd.read_csv(file_content, sep=",", encoding="utf-8", low_memory=False)
+        else:
+            raise ValueError(f"Formato de arquivo não suportado: {nome_encontrado}")
+
+        logger.info(f"✅ Dados carregados do arquivo {nome_encontrado}. Shape: {df.shape}")
+
         if df.empty:
-            logger.warning("⚠️ O arquivo Parquet está vazio")
-            st.warning("⚠️ O arquivo Parquet está vazio")
+            logger.warning("⚠️ O arquivo está vazio")
+            st.warning("⚠️ O arquivo está vazio")
             return pd.DataFrame()
-        
+
         # Atualizar cache
         st.session_state.df_dados = df.copy()
         st.session_state.ultima_atualizacao = dt.now()
-        
-        # Limpar interface de carregamento
+
         placeholder.empty()
-        
-        st.success(f"✅ Arquivo '{NOME_ARQUIVO}' carregado com sucesso!")
+        st.success(f"✅ Arquivo '{nome_encontrado}' carregado com sucesso!")
         st.sidebar.info("🔄 Dados atualizados recentemente...")
-        
-        logger.info("✅ Processamento de dados concluído com sucesso")
+
         return df
-        
+
     except Exception as e:
         error_msg = f"❌ Erro ao carregar dados do Google Drive: {str(e)}"
         logger.error(error_msg, exc_info=True)
         st.error(error_msg)
         return pd.DataFrame()
-
 # ===== FUNÇÕES DE ANÁLISE E VISUALIZAÇÃO =====
 
 def normalize_text(text):
@@ -819,7 +825,7 @@ try:
                 df_lojistas_recuperar = identificar_lojistas_recuperar(df)
                 
                 col_mapa1, col_mapa2 = st.columns([1, 1])
-                
+                ''
                 with col_mapa1:
                     df_mapa = df.copy()
                     df_mapa["Cidade"] = df_mapa["Cidade"].str.strip()
