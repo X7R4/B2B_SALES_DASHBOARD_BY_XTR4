@@ -14,7 +14,11 @@ import sys
 from datetime import datetime as dt
 from workalendar.america import Brazil
 import logging
-
+import io
+import requests
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 
 # Configuração de logging detalhada
 logging.basicConfig(
@@ -36,7 +40,6 @@ try:
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaIoBaseDownload
-    import io
     logger.info("✅ Bibliotecas Google importadas com sucesso")
 except ImportError as e:
     logger.error(f"❌ Erro ao importar bibliotecas Google: {e}")
@@ -45,128 +48,246 @@ except ImportError as e:
 
 # ===== CONFIGURAÇÃO =====
 PASTA_ID = "1FfiukpgvZL92AnRcj1LxE6QW195JLSMY"
-NOME_ARQUIVO = "dados_extraidos.parquet"
+NOME_PARQUET = "dados_extraidos.parquet"
+NOME_CSV = "dados_extraidos.csv"
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
-logger.info(f"Configuração inicial - Pasta ID: {PASTA_ID}, Arquivo: {NOME_ARQUIVO}")
+logger.info(f"Configuração inicial - Pasta ID: {PASTA_ID}, Arquivo Parquet: {NOME_PARQUET}, CSV: {NOME_CSV}")
 
 # ===== FUNÇÕES DE CARREGAMENTO DE DADOS =====
+
+def download_parquet_from_drive():
+    """Baixa o arquivo Parquet do Google Drive"""
+    try:
+        if 'gcp_service_account' in st.secrets:
+            credentials_info = {
+                "type": st.secrets["gcp_service_account"]["type"],
+                "project_id": st.secrets["gcp_service_account"]["project_id"],
+                "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+                "private_key": st.secrets["gcp_service_account"]["private_key"],
+                "client_email": st.secrets["gcp_service_account"]["client_email"],
+                "client_id": st.secrets["gcp_service_account"]["client_id"],
+                "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+                "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+                "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+                "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
+            }
+            
+            creds = service_account.Credentials.from_service_account_info(
+                credentials_info, scopes=SCOPES
+            )
+            
+            # Baixar arquivo
+            service = build('drive', 'v3', credentials=creds)
+            file = service.files().get(fileId=PASTA_ID, fields='name').execute()
+            request = service.files().get_media(fileId=PASTA_ID)
+            
+            file_content = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_content, request)
+            done = False
+            while done is False:
+                status, done = downloader.next_chunk()
+            
+            return file_content
+            
+        else:
+            # Fallback para download direto
+            response = requests.get(f'https://drive.google.com/uc?export=download&id={PASTA_ID}')
+            response.raise_for_status()
+            return io.BytesIO(response.content)
+            
+    except Exception as e:
+        st.error(f"Erro ao baixar Parquet: {e}")
+        return None
+
+def download_csv_from_drive():
+    """Baixa o arquivo CSV do Google Drive"""
+    try:
+        if 'gcp_service_account' in st.secrets:
+            credentials_info = {
+                "type": st.secrets["gcp_service_account"]["type"],
+                "project_id": st.secrets["gcp_service_account"]["project_id"],
+                "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+                "private_key": st.secrets["gcp_service_account"]["private_key"],
+                "client_email": st.secrets["gcp_service_account"]["client_email"],
+                "client_id": st.secrets["gcp_service_account"]["client_id"],
+                "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+                "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+                "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+                "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
+            }
+            
+            creds = service_account.Credentials.from_service_account_info(
+                credentials_info, scopes=SCOPES
+            )
+            
+            # Baixar arquivo
+            response = requests.get(f'https://drive.google.com/uc?export=download&id={PASTA_ID}', 
+                                  headers={'Authorization': f'Bearer {creds.token}'})
+            response.raise_for_status()
+            return io.StringIO(response.text)
+            
+        else:
+            # Fallback para download direto
+            response = requests.get(f'https://drive.google.com/uc?export=download&id={PASTA_ID}')
+            response.raise_for_status()
+            return io.StringIO(response.text)
+            
+    except Exception as e:
+        st.error(f"Erro ao baixar CSV: {e}")
+        return None
 
 @st.cache_data(ttl=3600, show_spinner="Carregando dados...")
 def carregar_dados_google_drive():
     """
-    Função otimizada para carregar dados do CSV consolidado
+    Função para carregar dados do Google Drive com prioridade Parquet
     """
-    try:
-        # Baixar o CSV
-        csv_content = download_csv_from_drive()
-        if csv_content is None:
-            return pd.DataFrame()
-        
-        # Carregar dados do CSV com otimizações
-        df = pd.read_csv(csv_content)
-        
-        if df.empty:
-            return pd.DataFrame()
-        
-        # Processar dados de forma otimizada
-        df['DATA'] = pd.to_datetime(df['DATA'], errors='coerce')
-        df['VALOR_UNITARIO'] = pd.to_numeric(df['VALOR_UNITARIO'], errors='coerce')
-        df['VALOR_PRODUTO'] = pd.to_numeric(df['VALOR_PRODUTO'], errors='coerce')
-        df['QUANTIDADE'] = pd.to_numeric(df['QUANTIDADE'], errors='coerce')
-        
-        # Filtrar dados inválidos
-        df = df.dropna(subset=['DATA', 'VALOR_PRODUTO'])
-        df = df[df['QUANTIDADE'] > 0]
-        
-        # Calcular valor total do pedido por pedido
-        df['VALOR_TOTAL_PEDIDO'] = df.groupby('NUMERO_PEDIDO')['VALOR_PRODUTO'].transform('sum')
-        
-        # Ordenar e remover duplicatas mantendo a última ocorrência
-        df = df.sort_values('DATA').drop_duplicates(subset=['NUMERO_PEDIDO', 'PRODUTO'], keep='last')
-        
-        return df
-        
-    except Exception as e:
-        st.error(f"Erro ao carregar dados: {e}")
-        return pd.DataFrame()
- 
-# Função de consolidação otimizada
-def consolidar_dados(df):
+    # Tenta carregar do Parquet primeiro
+    st.info("🔄 Tentando carregar dados do Parquet...")
+    parquet_content = download_parquet_from_drive()
+    
+    if parquet_content:
+        try:
+            df = pd.read_parquet(parquet_content)
+            if not df.empty:
+                logger.info("✅ Dados carregados com sucesso do Parquet")
+                return processar_dados(df)
+        except Exception as e:
+            logger.warning(f"Falha ao carregar Parquet: {e}")
+    
+    # Se falhar, tenta carregar do CSV
+    st.info("🔄 Tentando carregar dados do CSV...")
+    csv_content = download_csv_from_drive()
+    
+    if csv_content:
+        try:
+            df = pd.read_csv(csv_content)
+            if not df.empty:
+                logger.info("✅ Dados carregados com sucesso do CSV")
+                return processar_dados(df)
+        except Exception as e:
+            logger.warning(f"Falha ao carregar CSV: {e}")
+    
+    # Se ambos falharem, retorna DataFrame vazio
+    logger.warning("⚠️ Nenhum arquivo encontrado")
+    return pd.DataFrame()
+
+def processar_dados(df):
     """
-    Consolida dados de forma otimizada
+    Processa os dados carregados de forma otimizada
     """
     if df.empty:
         return pd.DataFrame()
     
-    # Agrupar por pedido para calcular métricas
-    pedidos = df.groupby('NUMERO_PEDIDO').agg({
-        'DATA': 'first',
-        'CLIENTE': 'first',
-        'TELEFONE': 'first',
-        'CIDADE': 'first',
-        'ESTADO': 'first',
-        'VALOR_TOTAL_PEDIDO': 'sum',
-        'QUANTIDADE': 'sum'
-    }).reset_index()
+    # Mapeamento robusto de colunas
+    mapeamento_colunas = {
+        'data': ['data', 'Data', 'DATA', 'date', 'Date', 'DATE'],
+        'valor_total': ['valor_total', 'Valor Total Z19-Z24', 'valor_total', 'Valor Total', 'valor', 'Valor'],
+        'quantidade': ['quantidade', 'Quantidade', 'QUANTIDADE', 'qtd', 'QTD'],
+        'numero_pedido': ['numero_pedido', 'Número do Pedido', 'pedido', 'Pedido', 'NUMERO_PEDIDO'],
+        'cliente': ['cliente', 'Cliente', 'CLIENTE', 'customer', 'Customer'],
+        'produto': ['produto', 'Produto', 'PRODUTO', 'item', 'Item'],
+        'cidade': ['cidade', 'Cidade', 'CIDADE'],
+        'estado': ['estado', 'Estado', 'ESTADO'],
+        'telefone': ['telefone', 'Telefone', 'TELEFONE'],
+        'valor_unitario': ['valor_unitario', 'Valor Unitário', 'VALOR_UNITARIO', 'unitario', 'Unitário'],
+        'valor_produto': ['valor_produto', 'Valor Produto', 'VALOR_PRODUTO', 'produto_value', 'Produto Value']
+    }
     
-    # Juntar com detalhes dos produtos
-    produtos = df[['NUMERO_PEDIDO', 'PRODUTO', 'QUANTIDADE', 'VALOR_UNITARIO', 'VALOR_PRODUTO']]
+    def encontrar_coluna(df, nomes_esperados):
+        for nome in nomes_esperados:
+            if nome in df.columns:
+                return nome
+        return None
     
-    return pd.merge(pedidos, produtos, on='NUMERO_PEDIDO', how='left')
- 
-# Função de cálculo de comissões otimizada
-def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
+    # Encontrar colunas correspondentes
+    col_data = encontrar_coluna(df, mapeamento_colunas['data'])
+    col_valor = encontrar_coluna(df, mapeamento_colunas['valor_total'])
+    col_quantidade = encontrar_coluna(df, mapeamento_colunas['quantidade'])
+    col_pedido = encontrar_coluna(df, mapeamento_colunas['numero_pedido'])
+    col_cliente = encontrar_coluna(df, mapeamento_colunas['cliente'])
+    col_produto = encontrar_coluna(df, mapeamento_colunas['produto'])
+    col_cidade = encontrar_coluna(df, mapeamento_colunas['cidade'])
+    col_estado = encontrar_coluna(df, mapeamento_colunas['estado'])
+    col_telefone = encontrar_coluna(df, mapeamento_colunas['telefone'])
+    col_unitario = encontrar_coluna(df, mapeamento_colunas['valor_unitario'])
+    col_produto_value = encontrar_coluna(df, mapeamento_colunas['valor_produto'])
+    
+    # Renomear colunas
+    df_renomeado = df.copy()
+    renomeacoes = {}
+    
+    if col_data and col_data != 'Data':
+        renomeacoes[col_data] = 'Data'
+    if col_valor and col_valor != 'Valor Total Z19-Z24':
+        renomeacoes[col_valor] = 'Valor Total Z19-Z24'
+    if col_quantidade and col_quantidade != 'Quantidade':
+        renomeacoes[col_quantidade] = 'Quantidade'
+    if col_pedido and col_pedido != 'Número do Pedido':
+        renomeacoes[col_pedido] = 'Número do Pedido'
+    if col_cliente and col_cliente != 'Cliente':
+        renomeacoes[col_cliente] = 'Cliente'
+    if col_produto and col_produto != 'Produto':
+        renomeacoes[col_produto] = 'Produto'
+    if col_cidade and col_cidade != 'Cidade':
+        renomeacoes[col_cidade] = 'Cidade'
+    if col_estado and col_estado != 'Estado':
+        renomeacoes[col_estado] = 'Estado'
+    if col_telefone and col_telefone != 'Telefone':
+        renomeacoes[col_telefone] = 'Telefone'
+    if col_unitario and col_unitario != 'Valor Unitário':
+        renomeacoes[col_unitario] = 'Valor Unitário'
+    if col_produto_value and col_produto_value != 'Valor Produto':
+        renomeacoes[col_produto_value] = 'Valor Produto'
+    
+    if renomeacoes:
+        df_renomeado = df_renomeado.rename(columns=renomeacoes)
+        st.info(f"🔄 Colunas renomeadas: {list(renomeacoes.values())}")
+    
+    df = df_renomeado
+    
+    # Processar dados
     try:
-        # Filtrar período
-        df_periodo = df[(df['DATA'] >= inicio_meta) & (df['DATA'] <= fim_meta)]
+        logger.info("Processando dados...")
         
-        # Cálculos otimizados com groupby
-        vendas_kit_ar = df_periodo[df_periodo['PRODUTO'].str.contains('KIT', na=False) & 
-                                  ~df_periodo['PRODUTO'].str.contains('KIT ROSCA', na=False)]
-        vendas_pecas = df_periodo[df_periodo['PRODUTO'].isin(['PEÇAS AVULSAS', 'KITS ROSCA'])]
+        # Converter colunas
+        df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+        df["Valor Total Z19-Z24"] = pd.to_numeric(df["Valor Total Z19-Z24"], errors="coerce")
+        df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce")
         
-        valor_kit_ar = vendas_kit_ar['VALOR_PRODUTO'].sum()
-        valor_pecas_avulsas = vendas_pecas['VALOR_PRODUTO'].sum()
-        pedidos_unicos = df_periodo['NUMERO_PEDIDO'].nunique()
+        # Se coluna Valor Unitário não existir, calcular a partir do Valor Total
+        if "Valor Unitário" not in df.columns:
+            df["Valor Unitário"] = df.apply(
+                lambda row: row["Valor Total Z19-Z24"] / row["Quantidade"] 
+                if pd.notna(row["Valor Total Z19-Z24"]) and pd.notna(row["Quantidade"]) and row["Quantidade"] > 0 
+                else None,
+                axis=1
+            )
         
-        valor_total_vendido = valor_kit_ar + valor_pecas_avulsas
+        # Se coluna Valor Produto não existir, calcular
+        if "Valor Produto" not in df.columns:
+            df["Valor Produto"] = df["Valor Unitário"] * df["Quantidade"]
         
-        # Cálculos de comissões
-        comissao_kit_ar = valor_kit_ar * 0.007
-        comissao_pecas_avulsas = valor_pecas_avulsas * 0.005
+        # Filtrar dados inválidos
+        df = df.dropna(subset=["Data", "Valor Produto"])
+        df = df[df["Quantidade"] > 0]
         
-        # Bônus
-        bonus = (valor_total_vendido // 50000) * 200
+        # Calcular valor total do pedido por pedido
+        df["Valor Total Pedido"] = df.groupby("Número do Pedido")["Valor Produto"].transform("sum")
         
-        # Meta
-        meta_atingida = valor_total_vendido >= 200000
-        premio_meta = 600 if meta_atingida else 0
+        # Ordenar e remover duplicatas mantendo a última ocorrência
+        df = df.sort_values("Data").drop_duplicates(subset=["Número do Pedido", "Produto"], keep="last")
         
-        ganhos_totais = comissao_kit_ar + comissao_pecas_avulsas + bonus + premio_meta
+        # Adicionar período mensal
+        df["Período_Mês"] = df["Data"].dt.to_period("M")
         
-        resultados = pd.DataFrame({
-            "Descrição": [
-                "Comissão de KIT AR (0.7%)",
-                "Comissão de Peças Avulsas e Kit Rosca (0.5%)",
-                "Bônus (R$ 200,00 a cada 50 mil vendido)",
-                "Prêmio Meta Mensal (se atingida)",
-                "Ganhos Estimados"
-            ],
-            "Valor (R$)": [
-                comissao_kit_ar,
-                comissao_pecas_avulsas,
-                bonus,
-                premio_meta,
-                ganhos_totais
-            ]
-        })
-        
-        return resultados, valor_total_vendido, meta_atingida
+        logger.info(f"✅ Dados processados. Shape final: {df.shape}")
+        return df
         
     except Exception as e:
-        st.error(f"Erro ao calcular comissões: {e}")
-        return pd.DataFrame(), 0, False
+        logger.error(f"Erro ao processar dados: {e}")
+        st.error(f"❌ Erro ao processar dados: {str(e)}")
+        return pd.DataFrame()
 
 # ===== FUNÇÕES DE ANÁLISE E VISUALIZAÇÃO =====
 
@@ -237,15 +358,15 @@ def classificar_produto(descricao):
 
 def verificar_duplicatas(df):
     try:
-        duplicatas = df[df.duplicated(subset=['numero_pedido'], keep=False)]
+        duplicatas = df[df.duplicated(subset=['Número do Pedido'], keep=False)]
         
         if not duplicatas.empty:
             st.warning(f"Foram encontradas {len(duplicatas)} duplicatas!")
             
             with st.expander("Ver Duplicatas"):
-                st.dataframe(duplicatas[["numero_pedido", "data", "cliente", "valor_total"]])
+                st.dataframe(duplicatas[["Número do Pedido", "Data", "Cliente", "Valor Total Z19-Z24"]])
             
-            st.caption(f"Total de pedidos: {len(df)} | Pedidos únicos: {len(df.drop_duplicates(subset=['numero_pedido']))} | Duplicatas: {len(duplicatas)}")
+            st.caption(f"Total de pedidos: {len(df)} | Pedidos únicos: {len(df.drop_duplicates(subset=['Número do Pedido']))} | Duplicatas: {len(duplicatas)}")
             return True
         else:
             st.success("✅ Nenhuma duplicata encontrada!")
@@ -259,12 +380,12 @@ def verificar_duplicatas(df):
 def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
     try:
         # Filtrar dados do período
-        df_periodo = df[(df['data'] >= inicio_meta) & (df['data'] <= fim_meta)].copy()
+        df_periodo = df[(df['Data'] >= inicio_meta) & (df['Data'] <= fim_meta)].copy()
         
         # Calcular totais
-        valor_kit_ar = df_periodo[df_periodo['produto'].str.contains('KIT') & 
-                                  ~df_periodo['produto'].str.contains('KIT ROSCA')]['valor_total'].sum()
-        valor_pecas_avulsas = df_periodo[df_periodo['produto'].isin(['PEÇAS AVULSAS', 'KITS ROSCA'])]['valor_total'].sum()
+        valor_kit_ar = df_periodo[df_periodo['Produto'].str.contains('KIT', na=False) & 
+                                  ~df_periodo['Produto'].str.contains('KIT ROSCA', na=False)]['Valor Produto'].sum()
+        valor_pecas_avulsas = df_periodo[df_periodo['Produto'].isin(['PEÇAS AVULSAS', 'KITS ROSCA'])]['Valor Produto'].sum()
         valor_total_vendido = valor_kit_ar + valor_pecas_avulsas
         
         percentual_kit_ar = 0.007
@@ -311,9 +432,9 @@ def identificar_lojistas_recuperar(df):
     try:
         # Identificar lojistas com mais de 3 pedidos e mais de 3 meses sem comprar
         hoje = dt.now()
-        lojistas_recuperar = df.groupby('cliente').agg(
-            num_pedidos=('numero_pedido', 'count'),
-            ultima_compra=('data', 'max')
+        lojistas_recuperar = df.groupby('Cliente').agg(
+            num_pedidos=('Número do Pedido', 'count'),
+            ultima_compra=('Data', 'max')
         ).reset_index()
         
         lojistas_recuperar = lojistas_recuperar[
@@ -322,11 +443,11 @@ def identificar_lojistas_recuperar(df):
         ]
         
         # Juntar com dados completos do último pedido
-        df_completo = df.sort_values('data').drop_duplicates(subset=['cliente'], keep='last')
+        df_completo = df.sort_values('Data').drop_duplicates(subset=['Cliente'], keep='last')
         lojistas_recuperar = pd.merge(
-            lojistas_recuperar[['cliente', 'num_pedidos', 'ultima_compra']], 
+            lojistas_recuperar[['Cliente', 'num_pedidos', 'ultima_compra']], 
             df_completo, 
-            on='cliente'
+            on='Cliente'
         )
         
         return lojistas_recuperar
@@ -340,12 +461,12 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
     try:
         # Filtrar pedidos do período
         tabela = df[
-            (df['data'] >= inicio_meta) & (df['data'] <= fim_meta)
-        ][['data', 'numero_pedido', 'cliente', 'valor_total']].copy()
+            (df['Data'] >= inicio_meta) & (df['Data'] <= fim_meta)
+        ][['Data', 'Número do Pedido', 'Cliente', 'Valor Total Pedido']].copy()
         
         tabela = tabela.rename(columns={
-            'data': 'data_pedido',
-            'valor_total': 'valor_pedido'
+            'Data': 'data_pedido',
+            'Valor Total Pedido': 'valor_pedido'
         })
         
         if not tabela.empty:
@@ -357,6 +478,135 @@ def gerar_tabela_pedidos_meta_atual(df, inicio_meta, fim_meta):
         logger.error(f"Erro ao gerar tabela de pedidos: {e}")
         st.error(f"Erro ao gerar tabela de pedidos: {e}")
         return pd.DataFrame()
+
+# ===== FUNÇÕES DE PROCESSAMENTO EM LOTES =====
+
+def processar_em_lotes(df, tamanho_lote=1000):
+    """
+    Processa dados em lotes para melhor performance
+    """
+    if df.empty:
+        return pd.DataFrame()
+    
+    logger.info(f"Processando dados em lotes de {tamanho_lote} registros...")
+    resultados = []
+    
+    # Dividir DataFrame em lotes
+    num_lotes = (len(df) // tamanho_lote) + 1
+    for i in range(num_lotes):
+        inicio = i * tamanho_lote
+        fim = min((i + 1) * tamanho_lote, len(df))
+        lote = df.iloc[inicio:fim]
+        
+        # Processar lote
+        lote_processado = processar_lote(lote)
+        if not lote_processado.empty:
+            resultados.append(lote_processado)
+        
+        # Mostrar progresso
+        progresso = ((i + 1) / num_lotes) * 100
+        logger.info(f"Lote {i+1}/{num_lotes} processado ({progresso:.1f}%)")
+    
+    # Combinar resultados
+    if resultados:
+        return pd.concat(resultados, ignore_index=True)
+    return pd.DataFrame()
+
+def processar_lote(df):
+    """
+    Processa um lote de dados
+    """
+    try:
+        # Converter colunas
+        df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+        df["Valor Total Z19-Z24"] = pd.to_numeric(df["Valor Total Z19-Z24"], errors="coerce")
+        df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce")
+        
+        # Calcular valor unitário e valor do produto
+        df["Valor Unitário"] = df.apply(
+            lambda row: row["Valor Total Z19-Z24"] / row["Quantidade"] 
+            if pd.notna(row["Valor Total Z19-Z24"]) and pd.notna(row["Quantidade"]) and row["Quantidade"] > 0 
+            else None,
+            axis=1
+        )
+        
+        df["Valor Produto"] = df["Valor Unitário"] * df["Quantidade"]
+        
+        # Filtrar dados inválidos
+        df = df.dropna(subset=["Data", "Valor Produto"])
+        df = df[df["Quantidade"] > 0]
+        
+        # Calcular valor total do pedido
+        df["Valor Total Pedido"] = df.groupby("Número do Pedido")["Valor Produto"].transform("sum")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"Erro ao processar lote: {e}")
+        return pd.DataFrame()
+
+# ===== FUNÇÃO DE CARREGAMENTO PROGRESSIVO =====
+
+def carregar_dados_progressivos():
+    """
+    Carrega dados de forma progressiva para melhor performance
+    """
+    try:
+        # Carregar dados principais
+        df = carregar_dados_google_drive()
+        
+        if df.empty:
+            return pd.DataFrame()
+        
+        # Processar em lotes para grandes datasets
+        if len(df) > 5000:
+            st.info(f"Dataset grande ({len(df)} registros). Processando em lotes...")
+            df = processar_em_lotes(df, tamanho_lote=2000)
+        
+        # Consolidar dados
+        df_consolidado = consolidar_dados(df)
+        
+        # Atualizar session state
+        st.session_state.df_dados = df_consolidado.copy()
+        st.session_state.ultima_atualizacao = dt.now()
+        
+        return df_consolidado
+        
+    except Exception as e:
+        logger.error(f"Erro no carregamento progressivo: {e}")
+        st.error(f"Erro no carregamento progressivo: {e}")
+        return pd.DataFrame()
+
+def consolidar_dados(df):
+    """
+    Consolida dados de forma otimizada
+    """
+    if df.empty:
+        return pd.DataFrame()
+    
+    try:
+        # Agrupar por pedido para calcular métricas
+        pedidos = df.groupby('Número do Pedido').agg({
+            'Data': 'first',
+            'Cliente': 'first',
+            'Telefone': 'first',
+            'Cidade': 'first',
+            'Estado': 'first',
+            'Valor Total Pedido': 'sum',
+            'Quantidade': 'sum'
+        }).reset_index()
+        
+        # Juntar com detalhes dos produtos
+        produtos = df[['Número do Pedido', 'Produto', 'Quantidade', 'Valor Unitário', 'Valor Produto']]
+        
+        # Remover duplicatas de produtos
+        produtos = produtos.drop_duplicates(subset=['Número do Pedido', 'Produto'], keep='last')
+        
+        return pd.merge(pedidos, produtos, on='Número do Pedido', how='left')
+        
+    except Exception as e:
+        logger.error(f"Erro na consolidação: {e}")
+        return df
 
 # ===== CONFIGURAÇÃO INICIAL =====
 
@@ -530,11 +780,12 @@ st.markdown("""
 logger.info("✅ CSS aplicado")
 
 # ===== SIDEBAR =====
-st.sidebar.title("📁 MENU DE DADOS - PARQUET")
+st.sidebar.title("📁 MENU DE DADOS - PARQUET/CSV")
 
 st.sidebar.markdown('<div class="status-sync">', unsafe_allow_html=True)
-st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE - PASTA 'PEDIDOS'")
-st.sidebar.markdown(f"### 📄 Arquivo: {NOME_ARQUIVO}")
+st.sidebar.markdown("### 🔄 STATUS GOOGLE DRIVE")
+st.sidebar.markdown(f"### 📄 Arquivo Parquet: {NOME_PARQUET}")
+st.sidebar.markdown(f"### 📄 Arquivo CSV: {NOME_CSV}")
 st.sidebar.markdown(f"### 📂 Pasta ID: {PASTA_ID}")
 
 if st.sidebar.button("🔄 Recarregar Dados"):
@@ -551,7 +802,8 @@ st.sidebar.markdown('</div>', unsafe_allow_html=True)
 logger.info("Iniciando carregamento de dados principais...")
 
 try:
-    df = carregar_dados_google_drive()
+    # Carregar dados progressivamente
+    df = carregar_dados_progressivos()
     logger.info(f"DataFrame carregado. Shape: {df.shape if not df.empty else 'vazio'}")
     
     if df.empty:
@@ -578,96 +830,6 @@ try:
             ultima_atualizacao_str = f"Erro de formatação: {str(e)}"
     
     st.sidebar.caption(f"🕒 Última atualização: {ultima_atualizacao_str}")
-    
-    # ===== CORREÇÃO DO ERRO KeyError: 'Data' =====
-    logger.info("Iniciando processamento de colunas...")
-    
-    if not df.empty:
-        with st.expander("🔍 Verificar colunas disponíveis"):
-            st.write("Colunas no DataFrame:")
-            st.write(df.columns.tolist())
-        
-        # Mapeamento de nomes de colunas
-        mapeamento_colunas = {
-            'data': ['data', 'Data', 'DATA', 'date', 'Date', 'DATE'],
-            'valor_total': ['valor_total', 'Valor Total Z19-Z24', 'valor_total', 'Valor Total', 'valor', 'Valor'],
-            'quantidade': ['quantidade', 'Quantidade', 'QUANTIDADE', 'qtd', 'QTD'],
-            'numero_pedido': ['numero_pedido', 'Número do Pedido', 'pedido', 'Pedido', 'NUMERO_PEDIDO'],
-            'cliente': ['cliente', 'Cliente', 'CLIENTE', 'customer', 'Customer'],
-            'produto': ['produto', 'Produto', 'PRODUTO', 'item', 'Item'],
-            'cidade': ['cidade', 'Cidade', 'CIDADE'],
-            'estado': ['estado', 'Estado', 'ESTADO'],
-            'telefone': ['telefone', 'Telefone', 'TELEFONE']
-        }
-        
-        def encontrar_coluna(df, nomes_esperados):
-            for nome in nomes_esperados:
-                if nome in df.columns:
-                    return nome
-            return None
-        
-        # Encontrar colunas correspondentes
-        col_data = encontrar_coluna(df, mapeamento_colunas['data'])
-        col_valor = encontrar_coluna(df, mapeamento_colunas['valor_total'])
-        col_quantidade = encontrar_coluna(df, mapeamento_colunas['quantidade'])
-        col_pedido = encontrar_coluna(df, mapeamento_colunas['numero_pedido'])
-        col_cliente = encontrar_coluna(df, mapeamento_colunas['cliente'])
-        col_produto = encontrar_coluna(df, mapeamento_colunas['produto'])
-        col_cidade = encontrar_coluna(df, mapeamento_colunas['cidade'])
-        col_estado = encontrar_coluna(df, mapeamento_colunas['estado'])
-        col_telefone = encontrar_coluna(df, mapeamento_colunas['telefone'])
-        
-        logger.info(f"Colunas encontradas - Data: {col_data}, Valor: {col_valor}, Quantidade: {col_quantidade}")
-        
-        if not col_data:
-            st.error("❌ Coluna de data não encontrada! Verifique o arquivo Parquet.")
-            st.stop()
-        
-        # Renomear colunas
-        df_renomeado = df.copy()
-        renomeacoes = {}
-        
-        if col_data and col_data != 'Data':
-            renomeacoes[col_data] = 'Data'
-        if col_valor and col_valor != 'Valor Total Z19-Z24':
-            renomeacoes[col_valor] = 'Valor Total Z19-Z24'
-        if col_quantidade and col_quantidade != 'Quantidade':
-            renomeacoes[col_quantidade] = 'Quantidade'
-        if col_pedido and col_pedido != 'Número do Pedido':
-            renomeacoes[col_pedido] = 'Número do Pedido'
-        if col_cliente and col_cliente != 'Cliente':
-            renomeacoes[col_cliente] = 'Cliente'
-        if col_produto and col_produto != 'Produto':
-            renomeacoes[col_produto] = 'Produto'
-        if col_cidade and col_cidade != 'Cidade':
-            renomeacoes[col_cidade] = 'Cidade'
-        if col_estado and col_estado != 'Estado':
-            renomeacoes[col_estado] = 'Estado'
-        if col_telefone and col_telefone != 'Telefone':
-            renomeacoes[col_telefone] = 'Telefone'
-        
-        if renomeacoes:
-            df_renomeado = df.rename(columns=renomeacoes)
-            st.info(f"🔄 Colunas renomeadas: {list(renomeacoes.values())}")
-        
-        df = df_renomeado
-        
-        # Processar dados
-        try:
-            logger.info("Processando dados...")
-            df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
-            df["Valor Total Z19-Z24"] = pd.to_numeric(df["Valor Total Z19-Z24"], errors="coerce")
-            df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce")
-            df["Período_Mês"] = df["Data"].dt.to_period("M")
-            df = df.dropna(subset=["Data"])
-            
-            st.success("✅ Dados processados com sucesso!")
-            logger.info(f"✅ Dados processados. Shape final: {df.shape}")
-            
-        except Exception as e:
-            logger.error(f"Erro ao processar dados: {e}")
-            st.error(f"❌ Erro ao processar dados: {str(e)}")
-            st.stop()
     
     # ===== DASHBOARD COM ABAS =====
     st.title("📊 Dashboard de Vendas")
@@ -728,8 +890,8 @@ try:
                 try:
                     col_d1_full, = st.columns([4])
                     with col_d1_full:
-                        vendas_dia = df_desempenho_local.groupby(df_desempenho_local["Data"].dt.date)["Valor Total Z19-Z24"].sum().reset_index()
-                        fig_dia = px.bar(vendas_dia, x="Data", y="Valor Total Z19-Z24", template="plotly_dark", color_discrete_sequence=["#FF8C00"])
+                        vendas_dia = df_desempenho_local.groupby(df_desempenho_local["Data"].dt.date)["Valor Total Pedido"].sum().reset_index()
+                        fig_dia = px.bar(vendas_dia, x="Data", y="Valor Total Pedido", template="plotly_dark", color_discrete_sequence=["#FF8C00"])
                         fig_dia.update_layout(xaxis_title="Data", yaxis_title="Valor Total (R$)", font=dict(size=10), margin=dict(l=10, r=10, t=30, b=10))
                         st.plotly_chart(fig_dia, width="stretch")
                         logger.info("✅ Gráfico de vendas por dia criado")
@@ -750,14 +912,14 @@ try:
                     df_atual["Semana"] = df_atual["Data"].apply(lambda x: get_week(x, start_date=inicio_atual, end_date=fim_atual))
                     df_anterior["Semana"] = df_anterior["Data"].apply(lambda x: get_week(x, start_date=inicio_anterior, end_date=fim_anterior))
                     
-                    vendas_atual_week = df_atual.groupby("Semana")["Valor Total Z19-Z24"].sum().reindex(range(1, 5), fill_value=0).reset_index()
+                    vendas_atual_week = df_atual.groupby("Semana")["Valor Total Pedido"].sum().reindex(range(1, 5), fill_value=0).reset_index()
                     vendas_atual_week["Período"] = vendas_atual_week["Semana"].apply(lambda x: f"Semana {x}")
-                    vendas_anterior_week = df_anterior.groupby("Semana")["Valor Total Z19-Z24"].sum().reindex(range(1, 5), fill_value=0).reset_index()
+                    vendas_anterior_week = df_anterior.groupby("Semana")["Valor Total Pedido"].sum().reindex(range(1, 5), fill_value=0).reset_index()
                     vendas_anterior_week["Período"] = vendas_anterior_week["Semana"].apply(lambda x: f"Semana {x}")
                     
                     fig_comparacao_ano = go.Figure()
-                    fig_comparacao_ano.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano_selecionado}', line=dict(color='#FF8C00')))
-                    fig_comparacao_ano.add_trace(go.Scatter(x=vendas_anterior_week["Período"], y=vendas_anterior_week["Valor Total Z19-Z24"], mode='lines+markers', name=f'{ano_selecionado-1}', line=dict(color='#FFA500')))
+                    fig_comparacao_ano.add_trace(go.Scatter(x=vendas_atual_week["Período"], y=vendas_atual_week["Valor Total Pedido"], mode='lines+markers', name=f'{ano_selecionado}', line=dict(color='#FF8C00')))
+                    fig_comparacao_ano.add_trace(go.Scatter(x=vendas_anterior_week["Período"], y=vendas_anterior_week["Valor Total Pedido"], mode='lines+markers', name=f'{ano_selecionado-1}', line=dict(color='#FFA500')))
                     fig_comparacao_ano.update_layout(
                         template="plotly_dark",
                         xaxis_title="Semanas",
@@ -801,11 +963,11 @@ try:
                 # Gráfico 4: Vendas por categoria
                 try:
                     df_desempenho_local["Categoria"] = df_desempenho_local["Produto"].apply(classificar_produto)
-                    vendas_categoria = df_desempenho_local.groupby("Categoria")["Valor Total Z19-Z24"].sum().reset_index()
+                    vendas_categoria = df_desempenho_local.groupby("Categoria")["Valor Total Pedido"].sum().reset_index()
                     categorias_completas = pd.DataFrame({"Categoria": ["KITS AR", "KITS ROSCA", "PEÇAS AVULSAS"]})
                     vendas_categoria = pd.merge(categorias_completas, vendas_categoria, on="Categoria", how="left").fillna(0)
                     
-                    fig_categoria = px.pie(vendas_categoria, names="Categoria", values="Valor Total Z19-Z24",
+                    fig_categoria = px.pie(vendas_categoria, names="Categoria", values="Valor Total Pedido",
                                          title=f"Vendas por Categoria - {inicio_periodo_local.strftime('%d/%m/%Y')} a {fim_periodo_local.strftime('%d/%m/%Y')}",
                                          template="plotly_dark",
                                          color_discrete_sequence=["#FFA500", "#FF8C00", "#E94F37"])
@@ -831,7 +993,7 @@ try:
                 df_lojistas_recuperar = identificar_lojistas_recuperar(df)
                 
                 col_mapa1, col_mapa2 = st.columns([1, 1])
-                ''
+                
                 with col_mapa1:
                     df_mapa = df.copy()
                     df_mapa["Cidade"] = df_mapa["Cidade"].str.strip()
@@ -1070,7 +1232,7 @@ try:
                                                      ["Todos"] + estados_unicos,
                                                      key="estado_lojistas")
                     
-                    df_lojistas = df.groupby(['Cliente', 'Estado'])['Valor Total Z19-Z24'].sum().reset_index()
+                    df_lojistas = df.groupby(['Cliente', 'Estado'])['Valor Total Pedido'].sum().reset_index()
                     
                     if estado_selecionado != "Todos":
                         df_lojistas_filtrado = df_lojistas[df_lojistas['Estado'] == estado_selecionado]
@@ -1079,11 +1241,11 @@ try:
                         df_lojistas_filtrado = df_lojistas
                         titulo_grafico = "Top 10 Lojistas - Todos os Estados"
                     
-                    top_lojistas = df_lojistas_filtrado.sort_values(by='Valor Total Z19-Z24', ascending=False).head(10)
+                    top_lojistas = df_lojistas_filtrado.sort_values(by='Valor Total Pedido', ascending=False).head(10)
                     
                     fig_lojistas = px.bar(top_lojistas, 
                                          x='Cliente', 
-                                         y='Valor Total Z19-Z24',
+                                         y='Valor Total Pedido',
                                          title=titulo_grafico,
                                          template='plotly_dark',
                                          color_discrete_sequence=['#FF8C00'])
@@ -1101,7 +1263,7 @@ try:
                     st.plotly_chart(fig_lojistas, width="stretch")
                     
                     st.subheader("Dados Detalhados dos Lojistas")
-                    st.dataframe(top_lojistas.style.format({'Valor Total Z19-Z24': 'R$ {:,.2f}'}), width="stretch")
+                    st.dataframe(top_lojistas.style.format({'Valor Total Pedido': 'R$ {:,.2f}'}), width="stretch")
                     logger.info("✅ Análise de lojistas criada")
                     
                 except Exception as e:
@@ -1164,9 +1326,9 @@ try:
                 # Calcular dados da meta
                 df_meta = df[(df["Data"] >= inicio_meta) & (df["Data"] <= fim_meta)].copy()
                 total_pedidos = len(df_meta)
-                pedidos_unicos = df_meta['numero_pedido'].nunique()
+                pedidos_unicos = df_meta['Número do Pedido'].nunique()
                 duplicatas = total_pedidos - pedidos_unicos
-                valor_total_vendido = df_meta['valor_total'].sum()
+                valor_total_vendido = df_meta['Valor Total Pedido'].sum()
                 
                 meta_total = 200_000
                 percentual_meta = min(1.0, valor_total_vendido / meta_total)
