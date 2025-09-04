@@ -54,124 +54,101 @@ SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
 logger.info(f"Configuração inicial - Pasta ID: {PASTA_ID}, Arquivo Parquet: {NOME_PARQUET}, CSV: {NOME_CSV}")
 
-# ===== FUNÇÕES DE CARREGAMENTO DE DADOS =====
-
-def download_parquet_from_drive():
-    """Baixa o arquivo Parquet do Google Drive"""
-    try:
-        if 'gcp_service_account' in st.secrets:
-            credentials_info = {
-                "type": st.secrets["gcp_service_account"]["type"],
-                "project_id": st.secrets["gcp_service_account"]["project_id"],
-                "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-                "private_key": st.secrets["gcp_service_account"]["private_key"],
-                "client_email": st.secrets["gcp_service_account"]["client_email"],
-                "client_id": st.secrets["gcp_service_account"]["client_id"],
-                "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-                "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-                "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-                "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
-            }
-            
-            creds = service_account.Credentials.from_service_account_info(
-                credentials_info, scopes=SCOPES
-            )
-            
-            # Baixar arquivo
-            service = build('drive', 'v3', credentials=creds)
-            file = service.files().get(fileId=PASTA_ID, fields='name').execute()
-            request = service.files().get_media(fileId=PASTA_ID)
-            
-            file_content = io.BytesIO()
-            downloader = MediaIoBaseDownload(file_content, request)
-            done = False
-            while done is False:
-                status, done = downloader.next_chunk()
-            
-            return file_content
-            
-        else:
-            # Fallback para download direto
-            response = requests.get(f'https://drive.google.com/uc?export=download&id={PASTA_ID}')
-            response.raise_for_status()
-            return io.BytesIO(response.content)
-            
-    except Exception as e:
-        st.error(f"Erro ao baixar Parquet: {e}")
-        return None
-
-def download_csv_from_drive():
-    """Baixa o arquivo CSV do Google Drive"""
-    try:
-        if 'gcp_service_account' in st.secrets:
-            credentials_info = {
-                "type": st.secrets["gcp_service_account"]["type"],
-                "project_id": st.secrets["gcp_service_account"]["project_id"],
-                "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-                "private_key": st.secrets["gcp_service_account"]["private_key"],
-                "client_email": st.secrets["gcp_service_account"]["client_email"],
-                "client_id": st.secrets["gcp_service_account"]["client_id"],
-                "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-                "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-                "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-                "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
-            }
-            
-            creds = service_account.Credentials.from_service_account_info(
-                credentials_info, scopes=SCOPES
-            )
-            
-            # Baixar arquivo
-            response = requests.get(f'https://drive.google.com/uc?export=download&id={PASTA_ID}', 
-                                  headers={'Authorization': f'Bearer {creds.token}'})
-            response.raise_for_status()
-            return io.StringIO(response.text)
-            
-        else:
-            # Fallback para download direto
-            response = requests.get(f'https://drive.google.com/uc?export=download&id={PASTA_ID}')
-            response.raise_for_status()
-            return io.StringIO(response.text)
-            
-    except Exception as e:
-        st.error(f"Erro ao baixar CSV: {e}")
-        return None
 
 @st.cache_data(ttl=3600, show_spinner="Carregando dados...")
 def carregar_dados_google_drive():
     """
-    Função para carregar dados do Google Drive com prioridade Parquet
+    Função final corrigida para carregar dados do Google Drive
     """
-    # Tenta carregar do Parquet primeiro
-    st.info("🔄 Tentando carregar dados do Parquet...")
-    parquet_content = download_parquet_from_drive()
-    
-    if parquet_content:
+    try:
+        st.info("🔄 Tentando carregar dados do Google Drive...")
+        
+        # Método 1: Download direto com URL padrão
         try:
-            df = pd.read_parquet(parquet_content)
-            if not df.empty:
-                logger.info("✅ Dados carregados com sucesso do Parquet")
-                return processar_dados(df)
+            csv_url = f'https://drive.google.com/uc?export=download&id={PASTA_ID}'
+            response = requests.get(csv_url, timeout=30)
+            
+            if response.status_code == 200:
+                df = pd.read_csv(io.StringIO(response.text))
+                if not df.empty:
+                    st.success("✅ Dados CSV carregados com sucesso!")
+                    return processar_dados(df)
         except Exception as e:
-            logger.warning(f"Falha ao carregar Parquet: {e}")
-    
-    # Se falhar, tenta carregar do CSV
-    st.info("🔄 Tentando carregar dados do CSV...")
-    csv_content = download_csv_from_drive()
-    
-    if csv_content:
+            logger.warning(f"Download direto falhou: {e}")
+        
+        # Método 2: Com service account (se disponível)
+        if 'gcp_service_account' in st.secrets:
+            try:
+                credentials_info = {
+                    "type": st.secrets["gcp_service_account"]["type"],
+                    "project_id": st.secrets["gcp_service_account"]["project_id"],
+                    "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
+                    "private_key": st.secrets["gcp_service_account"]["private_key"],
+                    "client_email": st.secrets["gcp_service_account"]["client_email"],
+                    "client_id": st.secrets["gcp_service_account"]["client_id"],
+                    "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
+                    "token_uri": st.secrets["gcp_service_account"]["token_uri"],
+                    "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
+                    "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
+                }
+                
+                creds = service_account.Credentials.from_service_account_info(
+                    credentials_info, scopes=SCOPES
+                )
+                
+                # Baixar arquivo
+                service = build('drive', 'v3', credentials=creds)
+                request = service.files().get_media(fileId=PASTA_ID)
+                file_content = io.BytesIO()
+                downloader = MediaIoBaseDownload(file_content, request)
+                done = False
+                
+                while done is False:
+                    status, done = downloader.next_chunk()
+                
+                # Tentar como CSV primeiro
+                try:
+                    df = pd.read_csv(io.StringIO(file_content.getvalue().decode('utf-8')))
+                    st.success("✅ Dados CSV carregados via Service Account!")
+                    return processar_dados(df)
+                except:
+                    # Tentar como Parquet
+                    try:
+                        df = pd.read_parquet(file_content)
+                        st.success("✅ Dados Parquet carregados via Service Account!")
+                        return processar_dados(df)
+                    except:
+                        pass
+                        
+            except Exception as e:
+                logger.warning(f"Service account falhou: {e}")
+        
+        # Método 3: Download alternativo
         try:
-            df = pd.read_csv(csv_content)
-            if not df.empty:
-                logger.info("✅ Dados carregados com sucesso do CSV")
-                return processar_dados(df)
+            alt_url = f'https://docs.google.com/uc?export=download&id={PASTA_ID}'
+            response = requests.get(alt_url, timeout=30)
+            
+            if response.status_code == 200:
+                df = pd.read_csv(io.StringIO(response.text))
+                if not df.empty:
+                    st.success("✅ Dados CSV carregados via URL alternativa!")
+                    return processar_dados(df)
         except Exception as e:
-            logger.warning(f"Falha ao carregar CSV: {e}")
-    
-    # Se ambos falharem, retorna DataFrame vazio
-    logger.warning("⚠️ Nenhum arquivo encontrado")
-    return pd.DataFrame()
-
+            logger.warning(f"URL alternativa falhou: {e}")
+        
+        # Se tudo falhar
+        st.error("❌ Nenhuma das tentativas de download funcionou")
+        st.info("Soluções:")
+        st.markdown("- Verifique se o arquivo está compartilhado com 'Qualquer pessoa com o link'")
+        st.markdown("- Confirme o ID do arquivo no Google Drive")
+        st.markdown("- Verifique se o arquivo não está corrompido")
+        
+        return pd.DataFrame()
+        
+    except Exception as e:
+        logger.error(f"Erro crítico no carregamento: {e}")
+        st.error(f"Erro crítico: {e}")
+        return pd.DataFrame()
 def processar_dados(df):
     """
     Processa os dados carregados de forma otimizada
