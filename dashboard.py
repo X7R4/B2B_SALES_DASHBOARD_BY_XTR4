@@ -52,116 +52,122 @@ logger.info(f"Configuração inicial - Pasta ID: {PASTA_ID}, Arquivo: {NOME_ARQU
 
 # ===== FUNÇÕES DE CARREGAMENTO DE DADOS =====
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner="Carregando dados...")
 def carregar_dados_google_drive():
-    logger.info("Iniciando carregamento de dados do Google Drive")
-    
+    """
+    Função otimizada para carregar dados do CSV consolidado
+    """
     try:
-        # Verificar cache
-        if 'df_dados' in st.session_state and 'ultima_atualizacao' in st.session_state:
-            if st.session_state.ultima_atualizacao is not None and \
-               (dt.now() - st.session_state.ultima_atualizacao).total_seconds() < 1800:
-                logger.info("Usando dados do cache")
-                return st.session_state.df_dados
-
-        placeholder = st.empty()
-        with placeholder.container():
-            st.markdown("### 🔄 CARREGANDO ARQUIVOS DO GOOGLE DRIVE")
-            st.write("Por favor, aguarde...")
-
-        logger.info("Autenticando com Google Drive...")
-
-        # Autenticar com o Google Drive usando st.secrets
-        credentials_info = {
-            "type": st.secrets["gcp_service_account"]["type"],
-            "project_id": st.secrets["gcp_service_account"]["project_id"],
-            "private_key_id": st.secrets["gcp_service_account"]["private_key_id"],
-            "private_key": st.secrets["gcp_service_account"]["private_key"],
-            "client_email": st.secrets["gcp_service_account"]["client_email"],
-            "client_id": st.secrets["gcp_service_account"]["client_id"],
-            "auth_uri": st.secrets["gcp_service_account"]["auth_uri"],
-            "token_uri": st.secrets["gcp_service_account"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"]
-        }
-
-        creds = service_account.Credentials.from_service_account_info(
-            credentials_info, scopes=SCOPES
-        )
-        service = build('drive', 'v3', credentials=creds)
-        logger.info("✅ Autenticação com Google Drive bem-sucedida")
-
-        # Procurar primeiro o parquet, se não achar tenta CSV
-        arquivos_alvo = ["dados_extraidos.parquet", "dados_extraidos.csv"]
-        file_info = None
-        nome_encontrado = None
-
-        for nome in arquivos_alvo:
-            query = f"parents in '{PASTA_ID}' and name = '{nome}'"
-            results = service.files().list(
-                q=query,
-                spaces='drive',
-                fields='files(id, name, modifiedTime, size)'
-            ).execute()
-            files = results.get('files', [])
-            if files:
-                file_info = files[0]
-                nome_encontrado = nome
-                break
-
-        if not file_info:
-            error_msg = f"Nenhum dos arquivos esperados ({', '.join(arquivos_alvo)}) foi encontrado na pasta do Google Drive"
-            logger.error(error_msg)
-            st.error(f"❌ {error_msg}")
+        # Baixar o CSV
+        csv_content = download_csv_from_drive()
+        if csv_content is None:
             return pd.DataFrame()
-
-        # Baixar arquivo
-        logger.info(f"Baixando arquivo: {file_info['name']} (ID: {file_info['id']})")
-        request = service.files().get_media(fileId=file_info['id'])
-        file_content = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_content, request)
-        done = False
-
-        while not done:
-            status, done = downloader.next_chunk()
-            if status:
-                logger.info(f"Progresso do download: {int(status.progress() * 100)}%")
-
-        logger.info("✅ Download concluído com sucesso")
-
-        # Resetar ponteiro para leitura
-        file_content.seek(0)
-
-        # Carregar dependendo do tipo
-        if nome_encontrado.endswith(".parquet"):
-            df = pd.read_parquet(file_content)
-        elif nome_encontrado.endswith(".csv"):
-            df = pd.read_csv(file_content, sep=",", encoding="utf-8", low_memory=False)
-        else:
-            raise ValueError(f"Formato de arquivo não suportado: {nome_encontrado}")
-
-        logger.info(f"✅ Dados carregados do arquivo {nome_encontrado}. Shape: {df.shape}")
-
+        
+        # Carregar dados do CSV com otimizações
+        df = pd.read_csv(csv_content)
+        
         if df.empty:
-            logger.warning("⚠️ O arquivo está vazio")
-            st.warning("⚠️ O arquivo está vazio")
             return pd.DataFrame()
-
-        # Atualizar cache
-        st.session_state.df_dados = df.copy()
-        st.session_state.ultima_atualizacao = dt.now()
-
-        placeholder.empty()
-        st.success(f"✅ Arquivo '{nome_encontrado}' carregado com sucesso!")
-        st.sidebar.info("🔄 Dados atualizados recentemente...")
-
+        
+        # Processar dados de forma otimizada
+        df['DATA'] = pd.to_datetime(df['DATA'], errors='coerce')
+        df['VALOR_UNITARIO'] = pd.to_numeric(df['VALOR_UNITARIO'], errors='coerce')
+        df['VALOR_PRODUTO'] = pd.to_numeric(df['VALOR_PRODUTO'], errors='coerce')
+        df['QUANTIDADE'] = pd.to_numeric(df['QUANTIDADE'], errors='coerce')
+        
+        # Filtrar dados inválidos
+        df = df.dropna(subset=['DATA', 'VALOR_PRODUTO'])
+        df = df[df['QUANTIDADE'] > 0]
+        
+        # Calcular valor total do pedido por pedido
+        df['VALOR_TOTAL_PEDIDO'] = df.groupby('NUMERO_PEDIDO')['VALOR_PRODUTO'].transform('sum')
+        
+        # Ordenar e remover duplicatas mantendo a última ocorrência
+        df = df.sort_values('DATA').drop_duplicates(subset=['NUMERO_PEDIDO', 'PRODUTO'], keep='last')
+        
         return df
-
+        
     except Exception as e:
-        error_msg = f"❌ Erro ao carregar dados do Google Drive: {str(e)}"
-        logger.error(error_msg, exc_info=True)
-        st.error(error_msg)
+        st.error(f"Erro ao carregar dados: {e}")
         return pd.DataFrame()
+ 
+# Função de consolidação otimizada
+def consolidar_dados(df):
+    """
+    Consolida dados de forma otimizada
+    """
+    if df.empty:
+        return pd.DataFrame()
+    
+    # Agrupar por pedido para calcular métricas
+    pedidos = df.groupby('NUMERO_PEDIDO').agg({
+        'DATA': 'first',
+        'CLIENTE': 'first',
+        'TELEFONE': 'first',
+        'CIDADE': 'first',
+        'ESTADO': 'first',
+        'VALOR_TOTAL_PEDIDO': 'sum',
+        'QUANTIDADE': 'sum'
+    }).reset_index()
+    
+    # Juntar com detalhes dos produtos
+    produtos = df[['NUMERO_PEDIDO', 'PRODUTO', 'QUANTIDADE', 'VALOR_UNITARIO', 'VALOR_PRODUTO']]
+    
+    return pd.merge(pedidos, produtos, on='NUMERO_PEDIDO', how='left')
+ 
+# Função de cálculo de comissões otimizada
+def calcular_comissoes_e_bonus(df, inicio_meta, fim_meta):
+    try:
+        # Filtrar período
+        df_periodo = df[(df['DATA'] >= inicio_meta) & (df['DATA'] <= fim_meta)]
+        
+        # Cálculos otimizados com groupby
+        vendas_kit_ar = df_periodo[df_periodo['PRODUTO'].str.contains('KIT', na=False) & 
+                                  ~df_periodo['PRODUTO'].str.contains('KIT ROSCA', na=False)]
+        vendas_pecas = df_periodo[df_periodo['PRODUTO'].isin(['PEÇAS AVULSAS', 'KITS ROSCA'])]
+        
+        valor_kit_ar = vendas_kit_ar['VALOR_PRODUTO'].sum()
+        valor_pecas_avulsas = vendas_pecas['VALOR_PRODUTO'].sum()
+        pedidos_unicos = df_periodo['NUMERO_PEDIDO'].nunique()
+        
+        valor_total_vendido = valor_kit_ar + valor_pecas_avulsas
+        
+        # Cálculos de comissões
+        comissao_kit_ar = valor_kit_ar * 0.007
+        comissao_pecas_avulsas = valor_pecas_avulsas * 0.005
+        
+        # Bônus
+        bonus = (valor_total_vendido // 50000) * 200
+        
+        # Meta
+        meta_atingida = valor_total_vendido >= 200000
+        premio_meta = 600 if meta_atingida else 0
+        
+        ganhos_totais = comissao_kit_ar + comissao_pecas_avulsas + bonus + premio_meta
+        
+        resultados = pd.DataFrame({
+            "Descrição": [
+                "Comissão de KIT AR (0.7%)",
+                "Comissão de Peças Avulsas e Kit Rosca (0.5%)",
+                "Bônus (R$ 200,00 a cada 50 mil vendido)",
+                "Prêmio Meta Mensal (se atingida)",
+                "Ganhos Estimados"
+            ],
+            "Valor (R$)": [
+                comissao_kit_ar,
+                comissao_pecas_avulsas,
+                bonus,
+                premio_meta,
+                ganhos_totais
+            ]
+        })
+        
+        return resultados, valor_total_vendido, meta_atingida
+        
+    except Exception as e:
+        st.error(f"Erro ao calcular comissões: {e}")
+        return pd.DataFrame(), 0, False
+
 # ===== FUNÇÕES DE ANÁLISE E VISUALIZAÇÃO =====
 
 def normalize_text(text):
